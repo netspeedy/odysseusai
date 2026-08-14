@@ -47,9 +47,11 @@ and SearXNG settings template:
 ```bash
 mkdir -p odysseusai/config/searxng
 cd odysseusai
-curl -fsSLO https://raw.githubusercontent.com/netspeedy/odysseusai/main/docker-compose.yml
-curl -fsSL https://raw.githubusercontent.com/netspeedy/odysseusai/main/.env.example -o .env
-curl -fsSL https://raw.githubusercontent.com/netspeedy/odysseusai/main/config/searxng/settings.yml -o config/searxng/settings.yml
+repository_url=https://raw.githubusercontent.com/netspeedy/odysseusai/main
+curl -fsSLO "${repository_url}/docker-compose.yml"
+curl -fsSL "${repository_url}/.env.example" -o .env
+curl -fsSL "${repository_url}/config/searxng/settings.yml" \
+  -o config/searxng/settings.yml
 docker compose up -d
 ```
 
@@ -99,9 +101,10 @@ docker compose up -d
 ```
 
 The upstream `main` and `dev` branches are checked automatically. A new image
-is published only when the corresponding upstream commit changes. Stable and
-development builds have separate immutable CalVer tags, while `latest`, `main`,
-and `dev` always point to the current image for their channel.
+is published when the corresponding source or underlying container base image
+changes. Stable and development builds have separate immutable CalVer tags,
+while `latest`, `main`, and `dev` always point to the current image for their
+channel.
 
 The Compose package is also synchronized automatically from upstream `main`.
 The Odysseus source-build directive is replaced with the corresponding

@@ -1,4 +1,4 @@
-name: Build Odysseus image
+name: Odysseus Container Pipeline
 
 on:
   push:
@@ -6,13 +6,13 @@ on:
       - main
     paths:
       - .github/workflows/build-image.yml
-      - .github/scripts/sync-upstream-runtime.sh
+      - .github/scripts/**
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
     inputs:
-      force:
-        description: Publish a new CalVer build even when upstream is unchanged
+      force_build:
+        description: Publish new stable and development images when inputs are unchanged
         required: false
         type: boolean
         default: false
@@ -21,219 +21,127 @@ on:
       - upstream-updated
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  group: odysseusai-image
+  group: odysseus-container-pipeline
   cancel-in-progress: false
 
 env:
   IMAGE_DESCRIPTION: Independent prebuilt container for Odysseus, built automatically from the official upstream source. This project publishes images and deployment files only.
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
-  PACKAGING_SCHEMA: "4"
+  PACKAGING_SCHEMA: "5"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
-  FORCE_BUILD: ${{ inputs.force || github.event.client_payload.force || false }}
+  FORCE_BUILD: ${{ inputs.force_build || github.event.client_payload.force_build || github.event.client_payload.force || false }}
 
 jobs:
-  sync-deployment:
-    name: Sync deployment package
-    runs-on: ubuntu-latest
+  sync_deployment:
+    name: Sync Deployment Bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
+    outputs:
+      changed: ${{ steps.publish.outputs.changed }}
+      upstream_sha: ${{ steps.publish.outputs.upstream_sha }}
 
     steps:
-      - name: Checkout image repository
-        uses: actions/checkout@v7
+      - name: Checkout deployment repository
+        uses: actions/checkout@v7.0.1
         with:
           ref: main
+          fetch-depth: 0
           path: packaging
 
       - name: Checkout upstream stable source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: ${{ env.UPSTREAM_REPOSITORY }}
           ref: main
           fetch-depth: 1
+          persist-credentials: false
           path: upstream
 
-      - name: Sync upstream runtime files
+      - name: Synchronize upstream runtime files
         working-directory: packaging
         run: .github/scripts/sync-upstream-runtime.sh ../upstream .
 
-      - name: Validate deployment package
+      - name: Validate deployment bundle
         working-directory: packaging
         run: docker compose --env-file .env.example config --quiet
 
-      - name: Publish upstream runtime changes
+      - name: Publish deployment bundle changes
+        id: publish
         working-directory: packaging
-        shell: bash
-        run: |
-          set -euo pipefail
+        run: .github/scripts/publish-runtime-sync.sh ../upstream
 
-          git add \
-            .env.example \
-            LICENSE \
-            docker-compose.yml \
-            config/searxng/settings.yml \
-            docker/gpu.amd.yml \
-            docker/gpu.nvidia.yml \
-            docker/host-docker.yml
-
-          if git diff --cached --quiet; then
-            echo "Deployment package already matches upstream main."
-            exit 0
-          fi
-
-          upstream_sha="$(git -C ../upstream rev-parse --short=12 HEAD)"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: sync Odysseus runtime ${upstream_sha}"
-          git push origin HEAD:main
-
-  build:
-    name: Build and publish (${{ matrix.upstream_branch }})
-    runs-on: ubuntu-latest
+  publish:
+    name: ${{ matrix.job_name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     permissions:
+      actions: read
       contents: read
       packages: write
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
-        upstream_branch:
-          - main
-          - dev
+        include:
+          - upstream_branch: main
+            channel_name: Stable
+            job_name: Publish Stable Image
+            moving_tags: latest, main
+          - upstream_branch: dev
+            channel_name: Development
+            job_name: Publish Development Image
+            moving_tags: dev
 
     steps:
+      - name: Checkout pipeline source
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Checkout upstream source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: ${{ env.UPSTREAM_REPOSITORY }}
           ref: ${{ matrix.upstream_branch }}
           fetch-depth: 1
+          persist-credentials: false
           path: upstream
 
-      - name: Read upstream revision
-        id: upstream
-        working-directory: upstream
-        shell: bash
-        env:
-          UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
-        run: |
-          set -euo pipefail
-          sha="$(git rev-parse HEAD)"
-          build_created="$(git show -s --format=%cI HEAD)"
-
-          {
-            echo "sha=${sha}"
-            echo "build_created=${build_created}"
-          } >> "${GITHUB_OUTPUT}"
-
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v4.2.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check GitHub Container Registry image state
-        id: published
-        shell: bash
+      - name: Plan image publication
+        id: plan
         env:
+          CHANNEL_NAME: ${{ matrix.channel_name }}
+          MOVING_TAGS: ${{ matrix.moving_tags }}
           UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
-        run: |
-          set -euo pipefail
-
-          image_label() {
-            local tag="$1"
-            local label="$2"
-            docker buildx imagetools inspect \
-              "${IMAGE_NAME}:${tag}" \
-              --format "{{ index .Image.Config.Labels \"${label}\" }}" \
-              2>/dev/null || true
-          }
-
-          branch_revision="$(image_label "${UPSTREAM_BRANCH}" "org.opencontainers.image.revision")"
-          branch_version="$(image_label "${UPSTREAM_BRANCH}" "org.opencontainers.image.version")"
-          branch_schema="$(image_label "${UPSTREAM_BRANCH}" "io.netspeedy.odysseus.packaging-schema")"
-          latest_revision=""
-          if [ "${UPSTREAM_BRANCH}" = "main" ]; then
-            latest_revision="$(image_label latest "org.opencontainers.image.revision")"
-          fi
-
-          {
-            echo "branch_revision=${branch_revision}"
-            echo "branch_version=${branch_version}"
-            echo "branch_schema=${branch_schema}"
-            echo "latest_revision=${latest_revision}"
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Decide whether to build or skip
-        id: decision
-        shell: bash
-        env:
-          BRANCH_REVISION: ${{ steps.published.outputs.branch_revision }}
-          BRANCH_SCHEMA: ${{ steps.published.outputs.branch_schema }}
-          BRANCH_VERSION: ${{ steps.published.outputs.branch_version }}
-          LATEST_REVISION: ${{ steps.published.outputs.latest_revision }}
-          UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
-          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
-        run: |
-          set -euo pipefail
-
-          version_is_calver=false
-          if [ "${UPSTREAM_BRANCH}" = "main" ] && [[ "${BRANCH_VERSION}" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$ ]]; then
-            version_is_calver=true
-          elif [ "${UPSTREAM_BRANCH}" = "dev" ] && [[ "${BRANCH_VERSION}" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*-dev$ ]]; then
-            version_is_calver=true
-          fi
-
-          action=build
-          if [ "${FORCE_BUILD}" != "true" ] \
-            && [ "${BRANCH_REVISION}" = "${UPSTREAM_SHA}" ] \
-            && [ "${BRANCH_SCHEMA}" = "${PACKAGING_SCHEMA}" ] \
-            && [ "${version_is_calver}" = "true" ] \
-            && { [ "${UPSTREAM_BRANCH}" != "main" ] || [ "${LATEST_REVISION}" = "${UPSTREAM_SHA}" ]; }; then
-            action=skip
-          fi
-
-          echo "action=${action}" >> "${GITHUB_OUTPUT}"
-
-      - name: Select CalVer image tag
-        if: steps.decision.outputs.action == 'build'
-        id: version
-        shell: bash
-        env:
-          UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
-        run: |
-          set -euo pipefail
-
-          date_version="$(date -u +%Y.%m.%d)"
-          suffix=""
-          if [ "${UPSTREAM_BRANCH}" = "dev" ]; then
-            suffix="-dev"
-          fi
-
-          sequence=1
-          while docker buildx imagetools inspect \
-            "${IMAGE_NAME}:${date_version}.${sequence}${suffix}" >/dev/null 2>&1; do
-            sequence=$((sequence + 1))
-          done
-
-          echo "tag=${date_version}.${sequence}${suffix}" >> "${GITHUB_OUTPUT}"
+        run: >-
+          python3 .github/scripts/image_pipeline.py plan
+          --source upstream
+          --result build-results/${{ matrix.upstream_branch }}.json
 
       - name: Generate image metadata
-        if: steps.decision.outputs.action == 'build'
+        if: steps.plan.outputs.action == 'build'
         id: metadata
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@v6.2.0
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ matrix.upstream_branch }}
-            type=raw,value=${{ steps.version.outputs.tag }}
+            type=raw,value=${{ steps.plan.outputs.version }}
             type=raw,value=latest,enable=${{ matrix.upstream_branch == 'main' }}
           labels: |
             org.opencontainers.image.title=Odysseus AI
@@ -241,29 +149,33 @@ jobs:
             org.opencontainers.image.source=https://github.com/netspeedy/odysseusai
             org.opencontainers.image.url=https://odysseus-dev.github.io/odysseus
             org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
-            org.opencontainers.image.revision=${{ steps.upstream.outputs.sha }}
-            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
-            org.opencontainers.image.created=${{ steps.upstream.outputs.build_created }}
+            org.opencontainers.image.revision=${{ steps.plan.outputs.upstream_sha }}
+            org.opencontainers.image.version=${{ steps.plan.outputs.version }}
+            org.opencontainers.image.created=${{ steps.plan.outputs.build_created }}
             org.opencontainers.image.licenses=AGPL-3.0-or-later
             io.netspeedy.odysseus.upstream=https://github.com/odysseus-dev/odysseus
             io.netspeedy.odysseus.channel=${{ matrix.upstream_branch }}
             io.netspeedy.odysseus.packaging-schema=${{ env.PACKAGING_SCHEMA }}
+            io.netspeedy.odysseus.base-image-fingerprint=${{ steps.plan.outputs.base_fingerprint }}
+            io.netspeedy.odysseus.base-images=${{ steps.plan.outputs.base_images }}
           annotations: |
             org.opencontainers.image.title=Odysseus AI
             org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
             org.opencontainers.image.source=https://github.com/netspeedy/odysseusai
             org.opencontainers.image.url=https://odysseus-dev.github.io/odysseus
             org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
-            org.opencontainers.image.revision=${{ steps.upstream.outputs.sha }}
-            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
-            org.opencontainers.image.created=${{ steps.upstream.outputs.build_created }}
+            org.opencontainers.image.revision=${{ steps.plan.outputs.upstream_sha }}
+            org.opencontainers.image.version=${{ steps.plan.outputs.version }}
+            org.opencontainers.image.created=${{ steps.plan.outputs.build_created }}
             org.opencontainers.image.licenses=AGPL-3.0-or-later
 
-      - name: Build and push image
-        if: steps.decision.outputs.action == 'build'
-        uses: docker/build-push-action@v7
+      - name: Build and publish image
+        if: steps.plan.outputs.action == 'build'
+        uses: docker/build-push-action@v7.3.0
         with:
           context: upstream
+          platforms: linux/amd64
+          pull: true
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
@@ -273,56 +185,66 @@ jobs:
           cache-from: type=gha,scope=odysseus-${{ matrix.upstream_branch }}
           cache-to: type=gha,mode=max,scope=odysseus-${{ matrix.upstream_branch }}
 
-      - name: Skip unchanged upstream revision
-        if: steps.decision.outputs.action == 'skip'
-        shell: bash
-        run: |
-          echo "${{ matrix.upstream_branch }} already contains upstream revision ${{ steps.upstream.outputs.sha }}."
-
-      - name: Verify published image metadata
-        shell: bash
+      - name: Report unchanged image
+        if: steps.plan.outputs.action == 'skip'
         env:
+          CHANNEL_NAME: ${{ matrix.channel_name }}
+          PLAN_REASON: ${{ steps.plan.outputs.reason }}
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+        run: >-
+          printf '%s image is current at upstream revision %.12s (%s).\n'
+          "${CHANNEL_NAME}" "${UPSTREAM_SHA}" "${PLAN_REASON}"
+
+      - name: Verify published image
+        env:
+          EXPECTED_VERSION: ${{ steps.plan.outputs.version }}
+          BASE_IMAGE_FINGERPRINT: ${{ steps.plan.outputs.base_fingerprint }}
+          BASE_IMAGES: ${{ steps.plan.outputs.base_images }}
           UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
-          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
-        run: |
-          set -euo pipefail
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+        run: >-
+          python3 .github/scripts/image_pipeline.py verify
+          --result build-results/${{ matrix.upstream_branch }}.json
 
-          image_ref="${IMAGE_NAME}:${UPSTREAM_BRANCH}"
-          manifest="$(docker buildx imagetools inspect "${image_ref}" --raw)"
+      - name: Upload channel result
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: image-result-${{ matrix.upstream_branch }}
+          path: build-results/${{ matrix.upstream_branch }}.json
+          if-no-files-found: error
+          retention-days: 1
 
-          label_value() {
-            local label="$1"
-            docker buildx imagetools inspect \
-              "${image_ref}" \
-              --format "{{ index .Image.Config.Labels \"${label}\" }}"
-          }
+  summary:
+    name: Run Summary
+    if: ${{ always() }}
+    needs:
+      - sync_deployment
+      - publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
 
-          media_type="$(jq -r '.mediaType' <<< "${manifest}")"
-          annotation_description="$(jq -r '.annotations["org.opencontainers.image.description"] // empty' <<< "${manifest}")"
-          label_description="$(label_value "org.opencontainers.image.description")"
-          published_revision="$(label_value "org.opencontainers.image.revision")"
-          published_schema="$(label_value "io.netspeedy.odysseus.packaging-schema")"
-          published_channel="$(label_value "io.netspeedy.odysseus.channel")"
-          published_version="$(label_value "org.opencontainers.image.version")"
+    steps:
+      - name: Checkout pipeline source
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
-          [ "${media_type}" = "application/vnd.oci.image.manifest.v1+json" ]
-          [ "${annotation_description}" = "${IMAGE_DESCRIPTION}" ]
-          [ "${label_description}" = "${IMAGE_DESCRIPTION}" ]
-          [ "${published_revision}" = "${UPSTREAM_SHA}" ]
-          [ "${published_schema}" = "${PACKAGING_SCHEMA}" ]
-          [ "${published_channel}" = "${UPSTREAM_BRANCH}" ]
+      - name: Download image results
+        continue-on-error: true
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: image-result-*
+          path: build-results
+          merge-multiple: true
 
-          if [ "${UPSTREAM_BRANCH}" = "main" ]; then
-            [[ "${published_version}" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$ ]]
-          else
-            [[ "${published_version}" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*-dev$ ]]
-          fi
-
-          channel_digest="$(docker buildx imagetools inspect "${image_ref}" --format "{{.Manifest.Digest}}")"
-          version_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:${published_version}" --format "{{.Manifest.Digest}}")"
-          [ "${channel_digest}" = "${version_digest}" ]
-
-          if [ "${UPSTREAM_BRANCH}" = "main" ]; then
-            latest_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:latest" --format "{{.Manifest.Digest}}")"
-            [ "${channel_digest}" = "${latest_digest}" ]
-          fi
+      - name: Write run summary
+        env:
+          BUILD_RESULT: ${{ needs.publish.result }}
+          SYNC_CHANGED: ${{ needs.sync_deployment.outputs.changed }}
+          SYNC_RESULT: ${{ needs.sync_deployment.result }}
+          SYNC_UPSTREAM_SHA: ${{ needs.sync_deployment.outputs.upstream_sha }}
+        run: python3 .github/scripts/write_summary.py --results build-results

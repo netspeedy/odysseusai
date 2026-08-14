@@ -66,7 +66,7 @@ mv "${compose_tmp}" "${target_dir}/docker-compose.yml"
 
 {
   echo "# Image channel from ghcr.io/netspeedy/odysseusai."
-echo "# Use latest/main for stable, dev for development, or a CalVer tag to pin."
+  echo "# Use latest/main for stable, dev for development, or a CalVer tag to pin."
   echo "ODYSSEUS_IMAGE_TAG=latest"
   echo
   cat "${upstream_dir}/.env.example"
