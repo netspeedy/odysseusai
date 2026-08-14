@@ -28,6 +28,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  IMAGE_DESCRIPTION: Prebuilt, automatically updated container image for the Odysseus self-hosted AI workspace.
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
   PACKAGING_SCHEMA: "2"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
@@ -236,7 +237,7 @@ jobs:
             type=raw,value=latest,enable=${{ matrix.upstream_branch == 'main' }}
           labels: |
             org.opencontainers.image.title=Odysseus AI
-            org.opencontainers.image.description=Prebuilt, automatically updated container image for the Odysseus self-hosted AI workspace.
+            org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
             org.opencontainers.image.source=https://github.com/netspeedy/odysseusai
             org.opencontainers.image.url=https://github.com/odysseus-dev/odysseus
             org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
@@ -249,7 +250,7 @@ jobs:
             io.netspeedy.odysseus.packaging-schema=${{ env.PACKAGING_SCHEMA }}
           annotations: |
             org.opencontainers.image.title=Odysseus AI
-            org.opencontainers.image.description=Prebuilt, automatically updated container image for the Odysseus self-hosted AI workspace.
+            org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
             org.opencontainers.image.source=https://github.com/netspeedy/odysseusai
             org.opencontainers.image.url=https://github.com/odysseus-dev/odysseus
             org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
@@ -277,3 +278,51 @@ jobs:
         shell: bash
         run: |
           echo "${{ matrix.upstream_branch }} already contains upstream revision ${{ steps.upstream.outputs.sha }}."
+
+      - name: Verify published image metadata
+        shell: bash
+        env:
+          UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          image_ref="${IMAGE_NAME}:${UPSTREAM_BRANCH}"
+          manifest="$(docker buildx imagetools inspect "${image_ref}" --raw)"
+
+          label_value() {
+            local label="$1"
+            docker buildx imagetools inspect \
+              "${image_ref}" \
+              --format "{{ index .Image.Config.Labels \"${label}\" }}"
+          }
+
+          media_type="$(jq -r '.mediaType' <<< "${manifest}")"
+          annotation_description="$(jq -r '.annotations["org.opencontainers.image.description"] // empty' <<< "${manifest}")"
+          label_description="$(label_value "org.opencontainers.image.description")"
+          published_revision="$(label_value "org.opencontainers.image.revision")"
+          published_schema="$(label_value "io.netspeedy.odysseus.packaging-schema")"
+          published_channel="$(label_value "io.netspeedy.odysseus.channel")"
+          published_version="$(label_value "org.opencontainers.image.version")"
+
+          [ "${media_type}" = "application/vnd.oci.image.manifest.v1+json" ]
+          [ "${annotation_description}" = "${IMAGE_DESCRIPTION}" ]
+          [ "${label_description}" = "${IMAGE_DESCRIPTION}" ]
+          [ "${published_revision}" = "${UPSTREAM_SHA}" ]
+          [ "${published_schema}" = "${PACKAGING_SCHEMA}" ]
+          [ "${published_channel}" = "${UPSTREAM_BRANCH}" ]
+
+          if [ "${UPSTREAM_BRANCH}" = "main" ]; then
+            [[ "${published_version}" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$ ]]
+          else
+            [[ "${published_version}" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*-dev$ ]]
+          fi
+
+          channel_digest="$(docker buildx imagetools inspect "${image_ref}" --format "{{.Manifest.Digest}}")"
+          version_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:${published_version}" --format "{{.Manifest.Digest}}")"
+          [ "${channel_digest}" = "${version_digest}" ]
+
+          if [ "${UPSTREAM_BRANCH}" = "main" ]; then
+            latest_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:latest" --format "{{.Manifest.Digest}}")"
+            [ "${channel_digest}" = "${latest_digest}" ]
+          fi
