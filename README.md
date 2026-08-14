@@ -42,7 +42,7 @@ extract it, copy `.env.example` to `.env`, adjust your settings, and run
 ### Download only the required files
 
 A standard CPU deployment needs only the Compose file, environment template,
-and SearXNG settings template:
+and the two SearXNG configuration templates:
 
 ```bash
 mkdir -p odysseusai/config/searxng
@@ -52,6 +52,8 @@ curl -fsSLO "${repository_url}/docker-compose.yml"
 curl -fsSL "${repository_url}/.env.example" -o .env
 curl -fsSL "${repository_url}/config/searxng/settings.yml" \
   -o config/searxng/settings.yml
+curl -fsSL "${repository_url}/config/searxng/limiter.toml" \
+  -o config/searxng/limiter.toml
 docker compose up -d
 ```
 
@@ -109,8 +111,10 @@ channel.
 Every candidate image must pass image-level compatibility checks and boot with
 the complete Compose package before any channel or immutable tag is published.
 The full-stack gate verifies Odysseus health, all bundled MCP servers, ChromaDB,
-ntfy, and a real SearXNG query through the Odysseus search API. Scheduled runs
-repeat the Compose test against current images even when no rebuild is needed.
+ntfy, and a real SearXNG query through the Odysseus search API, then rejects
+request-time SearXNG configuration errors from the resulting logs. Scheduled
+runs repeat the Compose test against current images even when no rebuild is
+needed.
 
 SearXNG updates are handled as part of the same automation. The current
 upstream `latest` image is resolved to its readable version tag and immutable
@@ -133,12 +137,13 @@ This is an independent container packaging project. It is not maintained by,
 affiliated with, or endorsed by the Odysseus project.
 
 Odysseus application code is built directly from
-[`odysseus-dev/odysseus`](https://github.com/odysseus-dev/odysseus) without
-application code patches. The current packaging-only dependency patch enforces
-`mcp<2`: upstream `main` leaves MCP unbounded while its bundled servers still
-use the MCP 1.x API, and upstream `dev` already declares the same limit. The
-patch is applied only to the image build context, recorded in image metadata,
-and kept in a small public constraints file. Application features, bugs, and
+[`odysseus-dev/odysseus`](https://github.com/odysseus-dev/odysseus). Two narrow
+compatibility changes are applied only to the temporary image build context:
+`mcp<2` keeps upstream `main` compatible with its bundled MCP 1.x servers, and
+the internal SearXNG client identifies local requests so the bundled search
+service does not treat normal Odysseus traffic as a missing-proxy error. Both
+changes are public, versioned, tested, and fingerprinted in the image metadata;
+they do not alter the upstream repository. Application features, bugs, and
 documentation belong to the upstream project. Image publishing and
 deployment-bundle issues belong in this repository.
 

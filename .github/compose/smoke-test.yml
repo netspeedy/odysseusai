@@ -1,7 +1,7 @@
 services:
   odysseus:
     image: ${ODYSSEUS_CANDIDATE_IMAGE:?candidate image is required}
-    platform: linux/amd64
+    platform: ${ODYSSEUS_TEST_PLATFORM:-linux/amd64}
     ports: !reset []
     environment:
       AUTH_ENABLED: "false"

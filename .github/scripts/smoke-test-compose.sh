@@ -144,14 +144,6 @@ if [ "${mcp_ready}" != "true" ]; then
   exit 1
 fi
 
-"${compose[@]}" logs --no-color searxng > "${searxng_logs_file}" 2>&1
-if grep -Eq \
-  'Traceback \(most recent call last\):|sqlite3\.OperationalError|ERROR:searx\.engines:|ERROR:searx\.searx\.search\.processor:|ERROR:searx\.search\.processors:|missing config file: /etc/searxng/limiter\.toml|X-Forwarded-For nor X-Real-IP' \
-  "${searxng_logs_file}"; then
-  echo "SearXNG reported a critical startup or configuration error." >&2
-  exit 1
-fi
-
 "${compose[@]}" exec -T odysseus python - <<'PY'
 import json
 import time
@@ -200,5 +192,13 @@ print(
     f"health={health['status']}, search_results={len(search_payload['results'])}"
 )
 PY
+
+"${compose[@]}" logs --no-color searxng > "${searxng_logs_file}" 2>&1
+if grep -Eq \
+  'Traceback \(most recent call last\):|sqlite3\.OperationalError|ERROR:searx\.engines:|ERROR:searx\.searx\.search\.processor:|ERROR:searx\.search\.processors:|ERROR:searx\.botdetection:|missing config file: /etc/searxng/limiter\.toml|X-Forwarded-For nor X-Real-IP' \
+  "${searxng_logs_file}"; then
+  echo "SearXNG reported a critical startup, configuration, or request error." >&2
+  exit 1
+fi
 
 echo "Compose stack passed Odysseus, ChromaDB, SearXNG, ntfy, and bundled MCP checks."
