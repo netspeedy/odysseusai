@@ -1,8 +1,10 @@
 # Odysseus AI Container Images
 
 Public, prebuilt Docker images for
-[Odysseus](https://github.com/odysseus-dev/odysseus), the self-hosted AI
-workspace.
+[Odysseus](https://odysseus-dev.github.io/odysseus), the self-hosted AI
+workspace. Application source and development are maintained in the upstream
+[`odysseus-dev/odysseus`](https://github.com/odysseus-dev/odysseus)
+repository.
 
 This project automatically turns upstream Odysseus updates into ready-to-run
 container images, removing the need to clone the application source and rebuild

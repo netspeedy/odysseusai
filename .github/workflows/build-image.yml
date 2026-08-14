@@ -28,9 +28,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_DESCRIPTION: Prebuilt, automatically updated container image for the Odysseus self-hosted AI workspace.
+  IMAGE_DESCRIPTION: "Independent prebuilt container for Odysseus, the self-hosted AI workspace. Built directly from upstream; this project only publishes images and deployment files. Website: https://odysseus-dev.github.io/odysseus | Source: https://github.com/odysseus-dev/odysseus"
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
-  PACKAGING_SCHEMA: "2"
+  PACKAGING_SCHEMA: "3"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
   FORCE_BUILD: ${{ inputs.force || github.event.client_payload.force || false }}
 
@@ -239,7 +239,7 @@ jobs:
             org.opencontainers.image.title=Odysseus AI
             org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
             org.opencontainers.image.source=https://github.com/netspeedy/odysseusai
-            org.opencontainers.image.url=https://github.com/odysseus-dev/odysseus
+            org.opencontainers.image.url=https://odysseus-dev.github.io/odysseus
             org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
             org.opencontainers.image.revision=${{ steps.upstream.outputs.sha }}
             org.opencontainers.image.version=${{ steps.version.outputs.tag }}
@@ -252,7 +252,7 @@ jobs:
             org.opencontainers.image.title=Odysseus AI
             org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
             org.opencontainers.image.source=https://github.com/netspeedy/odysseusai
-            org.opencontainers.image.url=https://github.com/odysseus-dev/odysseus
+            org.opencontainers.image.url=https://odysseus-dev.github.io/odysseus
             org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
             org.opencontainers.image.revision=${{ steps.upstream.outputs.sha }}
             org.opencontainers.image.version=${{ steps.version.outputs.tag }}
