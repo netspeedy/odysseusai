@@ -28,9 +28,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_DESCRIPTION: "Independent prebuilt container for Odysseus, the self-hosted AI workspace. Built directly from upstream; this project only publishes images and deployment files. Website: https://odysseus-dev.github.io/odysseus | Source: https://github.com/odysseus-dev/odysseus"
+  IMAGE_DESCRIPTION: Independent prebuilt container for Odysseus, built automatically from the official upstream source. This project publishes images and deployment files only.
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
-  PACKAGING_SCHEMA: "3"
+  PACKAGING_SCHEMA: "4"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
   FORCE_BUILD: ${{ inputs.force || github.event.client_payload.force || false }}
 
