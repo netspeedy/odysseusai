@@ -97,7 +97,7 @@ ODYSSEUS_IMAGE_TAG=dev
 
 ```bash
 docker compose pull
-docker compose up -d
+docker compose up -d --force-recreate
 ```
 
 The upstream `main` and `dev` branches are checked automatically. A new image
@@ -117,7 +117,9 @@ upstream `latest` image is resolved to its readable version tag and immutable
 digest, then smoke-tested for clean startup and real search results before the
 deployment bundle is updated. A small packaging profile removes Tor-only and
 startup-network-dependent optional engines that otherwise emit initialization
-errors in this direct container deployment.
+errors in this direct container deployment. Compose automatically migrates an
+existing SearXNG configuration volume to the current tested profile while
+preserving its secret key.
 
 The Compose package is also synchronized automatically from upstream `main`.
 The Odysseus source-build directive is replaced with the corresponding

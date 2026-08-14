@@ -75,7 +75,7 @@ trap 'rm -f "${compose_tmp}" "${env_tmp}" "${settings_tmp}"' EXIT
 
 awk '
   BEGIN {
-    print "# odysseusai-searxng-profile-v1"
+    print "# odysseusai-searxng-profile-v2"
   }
 
   $0 == "use_default_settings: true" {
@@ -158,7 +158,8 @@ awk -v searxng_image="${searxng_image}" '
   }
 
   in_searxng && /^        if \[ ! -s \/etc\/searxng\/settings\.yml \] \|\| grep -q .* \/etc\/searxng\/settings\.yml; then$/ {
-    print "        if [ ! -s /etc/searxng/settings.yml ] || grep -Eq \"odysseus-local-searxng-json-2026-05-30|__SEARXNG_SECRET__|^use_default_settings: true$\" /etc/searxng/settings.yml; then"
+    print "        profile_marker=\"# odysseusai-searxng-profile-v2\""
+    print "        if [ ! -s /etc/searxng/settings.yml ] || ! grep -Fqx \"$$profile_marker\" /etc/searxng/settings.yml; then"
     settings_init_replacements++
     next
   }
@@ -173,9 +174,7 @@ awk -v searxng_image="${searxng_image}" '
   }
 
   in_searxng && /^        exec \/usr\/local\/searxng\/entrypoint\.sh$/ {
-    print "        if [ ! -f /etc/searxng/limiter.toml ]; then"
-    print "          cp /tmp/searxng-limiter.toml.template /etc/searxng/limiter.toml"
-    print "        fi"
+    print "        cp /tmp/searxng-limiter.toml.template /etc/searxng/limiter.toml"
     limiter_init_replacements++
   }
 

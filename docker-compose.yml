@@ -99,7 +99,8 @@ services:
       - -c
       - |
         set -eu
-        if [ ! -s /etc/searxng/settings.yml ] || grep -Eq "odysseus-local-searxng-json-2026-05-30|__SEARXNG_SECRET__|^use_default_settings: true$" /etc/searxng/settings.yml; then
+        profile_marker="# odysseusai-searxng-profile-v2"
+        if [ ! -s /etc/searxng/settings.yml ] || ! grep -Fqx "$$profile_marker" /etc/searxng/settings.yml; then
           secret="$${SEARXNG_SECRET:-}"
           if [ -z "$$secret" ] && [ -s /etc/searxng/settings.yml ]; then
             secret="$$(grep -m 1 secret_key: /etc/searxng/settings.yml | cut -d\" -f 2)"
@@ -109,9 +110,7 @@ services:
           fi
           sed "s|__SEARXNG_SECRET__|$$secret|g" /tmp/searxng-settings.yml.template > /etc/searxng/settings.yml
         fi
-        if [ ! -f /etc/searxng/limiter.toml ]; then
-          cp /tmp/searxng-limiter.toml.template /etc/searxng/limiter.toml
-        fi
+        cp /tmp/searxng-limiter.toml.template /etc/searxng/limiter.toml
         exec /usr/local/searxng/entrypoint.sh
     ports:
       - "127.0.0.1:8080:8080"

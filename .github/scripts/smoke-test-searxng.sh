@@ -36,7 +36,17 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${APP_DATA_DIR}" "${APP_LOGS_DIR}"
-"${compose[@]}" up --detach --pull always --no-build searxng
+"${compose[@]}" run --rm --no-deps --pull always --user root \
+  --entrypoint /bin/sh searxng -c '
+cat > /etc/searxng/settings.yml <<"EOF"
+use_default_settings: true
+server:
+  limiter: true
+  secret_key: "odysseus-upgrade-test-secret"
+EOF
+rm -f /etc/searxng/limiter.toml
+'
+"${compose[@]}" up --detach --no-build searxng
 
 healthy=false
 for _ in $(seq 1 60); do
@@ -62,6 +72,12 @@ if [ "${healthy}" != "true" ]; then
   echo "SearXNG did not become healthy within 120 seconds." >&2
   exit 1
 fi
+
+"${compose[@]}" exec -T searxng sh -eu -c '
+grep -Fqx "# odysseusai-searxng-profile-v2" /etc/searxng/settings.yml
+grep -Fqx "  secret_key: \"odysseus-upgrade-test-secret\"" /etc/searxng/settings.yml
+test -s /etc/searxng/limiter.toml
+'
 
 sleep 2
 "${compose[@]}" logs --no-color searxng > "${logs_file}" 2>&1

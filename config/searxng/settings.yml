@@ -1,4 +1,4 @@
-# odysseusai-searxng-profile-v1
+# odysseusai-searxng-profile-v2
 use_default_settings:
   engines:
     remove:

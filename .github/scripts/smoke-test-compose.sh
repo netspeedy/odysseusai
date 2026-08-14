@@ -54,6 +54,16 @@ if ! grep -Fxq "${image_ref}" <<< "${resolved_images}"; then
   exit 1
 fi
 
+"${compose[@]}" run --rm --no-deps --pull "${pull_policy}" --user root \
+  --entrypoint /bin/sh searxng -c '
+cat > /etc/searxng/settings.yml <<"EOF"
+use_default_settings: true
+server:
+  limiter: true
+  secret_key: "odysseus-upgrade-test-secret"
+EOF
+rm -f /etc/searxng/limiter.toml
+'
 "${compose[@]}" up --detach --pull "${pull_policy}" --no-build
 
 healthy=false
@@ -100,6 +110,12 @@ if [ "$(docker inspect --format '{{.State.Health.Status}}' "${searxng_container}
   echo "SearXNG did not pass its Compose health check." >&2
   exit 1
 fi
+
+"${compose[@]}" exec -T searxng sh -eu -c '
+grep -Fqx "# odysseusai-searxng-profile-v2" /etc/searxng/settings.yml
+grep -Fqx "  secret_key: \"odysseus-upgrade-test-secret\"" /etc/searxng/settings.yml
+test -s /etc/searxng/limiter.toml
+'
 
 # Wait for every bundled MCP subprocess, including the NPX browser server.
 mcp_ready=false
