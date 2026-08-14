@@ -73,7 +73,12 @@ and optional integrations can be configured in `.env`.
 | `latest` | `main` | Recommended stable image |
 | `main` | `main` | Explicit stable channel |
 | `dev` | `dev` | Newest upstream development build |
-| `sha-<commit>` | Exact commit | Immutable, reproducible deployment |
+| `YYYY.MM.DD.N` | `main` | Immutable stable build |
+| `dev-YYYY.MM.DD.N` | `dev` | Immutable development build |
+
+Immutable builds use CalVer based on the UTC publication date. The final
+number starts at `1` and increments when more than one image is published on
+the same day. The exact upstream Git commit is recorded in the image metadata.
 
 The published image currently supports `linux/amd64`.
 
@@ -92,9 +97,9 @@ docker compose up -d
 ```
 
 The upstream `main` and `dev` branches are checked automatically. A new image
-is published only when the corresponding upstream commit changes. When a commit
-previously built from `dev` reaches `main`, the same immutable image is promoted
-to the stable channel.
+is published only when the corresponding upstream commit changes. Stable and
+development builds have separate immutable CalVer tags, while `latest`, `main`,
+and `dev` always point to the current image for their channel.
 
 The Compose package is also synchronized automatically from upstream `main`.
 The Odysseus source-build directive is replaced with the corresponding
