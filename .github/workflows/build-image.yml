@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - .github/compose/**
       - .github/constraints/**
       - .github/workflows/build-image.yml
       - .github/scripts/**
@@ -32,7 +33,7 @@ concurrency:
 env:
   IMAGE_DESCRIPTION: Independent prebuilt container for Odysseus, built automatically from the official upstream source. This project publishes images and deployment files only.
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
-  PACKAGING_SCHEMA: "6"
+  PACKAGING_SCHEMA: "7"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
   FORCE_BUILD: ${{ inputs.force_build || github.event.client_payload.force_build || github.event.client_payload.force || false }}
 
@@ -45,6 +46,7 @@ jobs:
       contents: write
     outputs:
       changed: ${{ steps.publish.outputs.changed }}
+      packaging_sha: ${{ steps.publish.outputs.packaging_sha }}
       upstream_sha: ${{ steps.publish.outputs.upstream_sha }}
 
     steps:
@@ -79,6 +81,7 @@ jobs:
 
   publish:
     name: ${{ matrix.job_name }}
+    needs: sync_deployment
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -102,6 +105,7 @@ jobs:
       - name: Checkout pipeline source
         uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ needs.sync_deployment.outputs.packaging_sha }}
           persist-credentials: false
 
       - name: Checkout upstream source
@@ -181,7 +185,7 @@ jobs:
             org.opencontainers.image.created=${{ steps.plan.outputs.build_created }}
             org.opencontainers.image.licenses=AGPL-3.0-or-later
 
-      - name: Build and publish image
+      - name: Build candidate image
         if: steps.plan.outputs.action == 'build'
         id: build
         uses: docker/build-push-action@v7.3.0
@@ -203,6 +207,16 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: .github/scripts/smoke-test-image.sh "${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+      - name: Smoke test candidate Compose stack
+        if: steps.plan.outputs.action == 'build'
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+      - name: Smoke test current Compose stack
+        if: steps.plan.outputs.action == 'skip'
+        run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}:${{ matrix.upstream_branch }}"
 
       - name: Promote tested image
         if: steps.plan.outputs.action == 'build'

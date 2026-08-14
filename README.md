@@ -106,9 +106,11 @@ changes. Stable and development builds have separate immutable CalVer tags,
 while `latest`, `main`, and `dev` always point to the current image for their
 channel.
 
-Every candidate image must start successfully, answer its health check, and
-pass bundled MCP compatibility checks before any channel or immutable tag is
-published.
+Every candidate image must pass image-level compatibility checks and boot with
+the complete Compose package before any channel or immutable tag is published.
+The full-stack gate verifies Odysseus health, all bundled MCP servers, ChromaDB,
+ntfy, and a real SearXNG query through the Odysseus search API. Scheduled runs
+repeat the Compose test against current images even when no rebuild is needed.
 
 The Compose package is also synchronized automatically from upstream `main`.
 The Odysseus source-build directive is replaced with the corresponding
@@ -122,10 +124,13 @@ affiliated with, or endorsed by the Odysseus project.
 
 Odysseus application code is built directly from
 [`odysseus-dev/odysseus`](https://github.com/odysseus-dev/odysseus) without
-code patches. Narrow dependency constraints may be applied when necessary to
-keep published images runnable while an upstream branch catches up. Application
-features, bugs, and documentation belong to the upstream project. Image
-publishing and deployment-bundle issues belong in this repository.
+application code patches. The current packaging-only dependency patch enforces
+`mcp<2`: upstream `main` leaves MCP unbounded while its bundled servers still
+use the MCP 1.x API, and upstream `dev` already declares the same limit. The
+patch is applied only to the image build context, recorded in image metadata,
+and kept in a small public constraints file. Application features, bugs, and
+documentation belong to the upstream project. Image publishing and
+deployment-bundle issues belong in this repository.
 
 ## License
 

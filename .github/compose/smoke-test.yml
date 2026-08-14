@@ -1,0 +1,18 @@
+services:
+  odysseus:
+    image: ${ODYSSEUS_CANDIDATE_IMAGE:?candidate image is required}
+    platform: linux/amd64
+    ports: !reset []
+    environment:
+      AUTH_ENABLED: "false"
+      ODYSSEUS_ADMIN_PASSWORD: odysseus-compose-smoke-test-password
+      ODYSSEUS_STARTUP_WARMUPS: "0"
+
+  chromadb:
+    ports: !reset []
+
+  searxng:
+    ports: !reset []
+
+  ntfy:
+    ports: !reset []

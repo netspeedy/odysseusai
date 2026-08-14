@@ -21,6 +21,7 @@ git add -- "${runtime_files[@]}"
 
 if git diff --cached --quiet -- "${runtime_files[@]}"; then
   echo "changed=false" >> "${GITHUB_OUTPUT}"
+  echo "packaging_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
   echo "Deployment bundle already matches upstream main."
   exit 0
 fi
@@ -31,3 +32,4 @@ git commit -m "chore: sync Odysseus runtime ${upstream_short_sha}" -- "${runtime
 git push origin HEAD:main
 
 echo "changed=true" >> "${GITHUB_OUTPUT}"
+echo "packaging_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
