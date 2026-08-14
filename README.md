@@ -74,7 +74,7 @@ and optional integrations can be configured in `.env`.
 | `main` | `main` | Explicit stable channel |
 | `dev` | `dev` | Newest upstream development build |
 | `YYYY.MM.DD.N` | `main` | Immutable stable build |
-| `dev-YYYY.MM.DD.N` | `dev` | Immutable development build |
+| `YYYY.MM.DD.N-dev` | `dev` | Immutable development build |
 
 Immutable builds use CalVer based on the UTC publication date. The final
 number starts at `1` and increments when more than one image is published on
