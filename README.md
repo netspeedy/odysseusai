@@ -112,10 +112,18 @@ The full-stack gate verifies Odysseus health, all bundled MCP servers, ChromaDB,
 ntfy, and a real SearXNG query through the Odysseus search API. Scheduled runs
 repeat the Compose test against current images even when no rebuild is needed.
 
+SearXNG updates are handled as part of the same automation. The current
+upstream `latest` image is resolved to its readable version tag and immutable
+digest, then smoke-tested for clean startup and real search results before the
+deployment bundle is updated. A small packaging profile removes Tor-only and
+startup-network-dependent optional engines that otherwise emit initialization
+errors in this direct container deployment.
+
 The Compose package is also synchronized automatically from upstream `main`.
 The Odysseus source-build directive is replaced with the corresponding
-`ghcr.io/netspeedy/odysseusai` image; upstream service versions and runtime
-settings are otherwise preserved.
+`ghcr.io/netspeedy/odysseusai` image. Packaging-owned compatibility changes are
+kept explicit and tested while the remaining upstream runtime files are
+preserved.
 
 ## Upstream Relationship
 

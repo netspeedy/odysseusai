@@ -9,6 +9,7 @@ runtime_files=(
   ".env.example"
   "LICENSE"
   "docker-compose.yml"
+  "config/searxng/limiter.toml"
   "config/searxng/settings.yml"
   "docker/gpu.amd.yml"
   "docker/gpu.nvidia.yml"

@@ -91,23 +91,26 @@ services:
     restart: unless-stopped
 
   searxng:
-    # Pinned, not :latest — odysseus waits on searxng's healthcheck
-    # (depends_on: condition: service_healthy), so a broken upstream `latest`
-    # tag blocks the whole app from starting. 2026.6.2 crashes on boot with
-    # `KeyError: 'default_doi_resolver'`, failing the healthcheck (issue #1414).
-    # Bump this deliberately after verifying a newer tag boots clean.
-    image: docker.io/searxng/searxng:2026.5.31-7159b8aed
+    # Automation resolves upstream latest to a readable tag plus immutable
+    # digest, then tests this exact image before publishing the bundle.
+    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.8.14-094c33d40@sha256:892cf809341915a4b7710d3c9045005b4c377d51335a089b6d4da0b28750788d}
     entrypoint:
       - /bin/sh
       - -c
       - |
         set -eu
-        if [ ! -s /etc/searxng/settings.yml ] || grep -q 'odysseus-local-searxng-json-2026-05-30\|__SEARXNG_SECRET__' /etc/searxng/settings.yml; then
+        if [ ! -s /etc/searxng/settings.yml ] || grep -Eq "odysseus-local-searxng-json-2026-05-30|__SEARXNG_SECRET__|^use_default_settings: true$" /etc/searxng/settings.yml; then
           secret="$${SEARXNG_SECRET:-}"
+          if [ -z "$$secret" ] && [ -s /etc/searxng/settings.yml ]; then
+            secret="$$(grep -m 1 secret_key: /etc/searxng/settings.yml | cut -d\" -f 2)"
+          fi
           if [ -z "$$secret" ]; then
             secret="$$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
           fi
           sed "s|__SEARXNG_SECRET__|$$secret|g" /tmp/searxng-settings.yml.template > /etc/searxng/settings.yml
+        fi
+        if [ ! -f /etc/searxng/limiter.toml ]; then
+          cp /tmp/searxng-limiter.toml.template /etc/searxng/limiter.toml
         fi
         exec /usr/local/searxng/entrypoint.sh
     ports:
@@ -115,6 +118,7 @@ services:
     volumes:
       - searxng-data:/etc/searxng
       - ./config/searxng/settings.yml:/tmp/searxng-settings.yml.template:ro,z
+      - ./config/searxng/limiter.toml:/tmp/searxng-limiter.toml.template:ro,z
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080/
       - SEARXNG_SECRET=${SEARXNG_SECRET:-}
@@ -133,7 +137,7 @@ services:
       - SETUID
       - DAC_OVERRIDE
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/', timeout=5).read(1)\""]
+      test: ["CMD-SHELL", "wget --quiet --spider --header=X-Real-IP:127.0.0.1 http://localhost:8080/"]
       interval: 5s
       timeout: 6s
       retries: 20

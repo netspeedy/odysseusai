@@ -9,6 +9,8 @@ on:
       - .github/constraints/**
       - .github/workflows/build-image.yml
       - .github/scripts/**
+      - config/searxng/**
+      - docker-compose.yml
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
@@ -41,7 +43,7 @@ jobs:
   sync_deployment:
     name: Sync Deployment Bundle
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
     outputs:
@@ -73,6 +75,18 @@ jobs:
       - name: Validate deployment bundle
         working-directory: packaging
         run: docker compose --env-file .env.example config --quiet
+
+      - name: Smoke test synchronized SearXNG
+        working-directory: packaging
+        run: .github/scripts/smoke-test-searxng.sh
+
+      - name: Smoke test synchronized stable Compose stack
+        working-directory: packaging
+        run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}:main"
+
+      - name: Smoke test synchronized development Compose stack
+        working-directory: packaging
+        run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}:dev"
 
       - name: Publish deployment bundle changes
         id: publish

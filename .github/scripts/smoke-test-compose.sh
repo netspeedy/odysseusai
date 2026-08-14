@@ -9,6 +9,7 @@ pull_policy="${ODYSSEUS_COMPOSE_PULL_POLICY:-always}"
 project_name="odysseus-compose-smoke-${GITHUB_RUN_ID:-local}-${RANDOM}"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/odysseus-compose-smoke.XXXXXX")"
 logs_file="${work_dir}/odysseus.log"
+searxng_logs_file="${work_dir}/searxng.log"
 
 export APP_DATA_DIR="${work_dir}/data"
 export APP_LOGS_DIR="${work_dir}/logs"
@@ -124,6 +125,14 @@ done
 
 if [ "${mcp_ready}" != "true" ]; then
   echo "Not all bundled MCP servers connected within 60 seconds." >&2
+  exit 1
+fi
+
+"${compose[@]}" logs --no-color searxng > "${searxng_logs_file}" 2>&1
+if grep -Eq \
+  'Traceback \(most recent call last\):|sqlite3\.OperationalError|ERROR:searx\.engines:|ERROR:searx\.searx\.search\.processor:|ERROR:searx\.search\.processors:|missing config file: /etc/searxng/limiter\.toml|X-Forwarded-For nor X-Real-IP' \
+  "${searxng_logs_file}"; then
+  echo "SearXNG reported a critical startup or configuration error." >&2
   exit 1
 fi
 

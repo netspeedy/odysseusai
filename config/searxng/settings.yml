@@ -1,6 +1,14 @@
-use_default_settings: true
+# odysseusai-searxng-profile-v1
+use_default_settings:
+  engines:
+    remove:
+      - ahmia
+      - radio browser
+      - torch
+      - wikidata
 
 server:
+  limiter: false
   secret_key: "__SEARXNG_SECRET__"
 
 search:
