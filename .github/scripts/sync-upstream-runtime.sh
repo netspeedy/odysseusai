@@ -136,6 +136,13 @@ awk -v searxng_image="${searxng_image}" '
     next
   }
 
+  in_odysseus && /^      - SEARXNG_INSTANCE=/ {
+    print
+    print "      - SEARXNG_GENERAL_ENGINES=${SEARXNG_GENERAL_ENGINES:-bing,duckduckgo}"
+    searxng_engines_replacements++
+    next
+  }
+
   in_searxng && /^    # Pinned, not :latest/ {
     skip_upstream_searxng_comment = 1
     next
@@ -196,6 +203,7 @@ awk -v searxng_image="${searxng_image}" '
   END {
     if (odysseus_replacements != 1 \
         || searxng_image_replacements != 1 \
+        || searxng_engines_replacements != 1 \
         || settings_init_replacements != 1 \
         || secret_preserve_replacements != 1 \
         || limiter_init_replacements != 1 \
@@ -213,6 +221,9 @@ mv "${compose_tmp}" "${target_dir}/docker-compose.yml"
   echo "# Image channel from ghcr.io/netspeedy/odysseusai."
   echo "# Use latest/main for stable, dev for development, or a CalVer tag to pin."
   echo "ODYSSEUS_IMAGE_TAG=latest"
+  echo
+  echo "# Reliable engines for the bundled SearXNG release."
+  echo "SEARXNG_GENERAL_ENGINES=bing,duckduckgo"
   echo
   cat "${upstream_dir}/.env.example"
 } > "${env_tmp}"

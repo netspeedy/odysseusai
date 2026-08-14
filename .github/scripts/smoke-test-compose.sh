@@ -146,6 +146,7 @@ fi
 
 "${compose[@]}" exec -T odysseus python - <<'PY'
 import json
+import os
 import time
 import urllib.request
 
@@ -163,6 +164,7 @@ assert "nanosecond heartbeat" in chroma, chroma
 
 ntfy = get_json("http://ntfy/v1/health")
 assert ntfy.get("healthy") is True, ntfy
+assert os.environ.get("SEARXNG_GENERAL_ENGINES") == "bing,duckduckgo"
 
 search_payload = None
 for query in ("Odysseus AI GitHub", "Python programming language"):
@@ -195,7 +197,7 @@ PY
 
 "${compose[@]}" logs --no-color searxng > "${searxng_logs_file}" 2>&1
 if grep -Eq \
-  'Traceback \(most recent call last\):|sqlite3\.OperationalError|ERROR:searx\.engines:|ERROR:searx\.searx\.search\.processor:|ERROR:searx\.search\.processors:|ERROR:searx\.botdetection:|missing config file: /etc/searxng/limiter\.toml|X-Forwarded-For nor X-Real-IP' \
+  'Traceback \(most recent call last\):|sqlite3\.OperationalError|ERROR:searx\.engines:|ERROR:searx\.searx\.search\.processor:|ERROR:searx\.search\.processors:|ERROR:searx\.botdetection:|WARNING:searx\.network\.(brave|yep):|WARNING:searx\.engines\.(brave|startpage|yep):|missing config file: /etc/searxng/limiter\.toml|X-Forwarded-For nor X-Real-IP' \
   "${searxng_logs_file}"; then
   echo "SearXNG reported a critical startup, configuration, or request error." >&2
   exit 1

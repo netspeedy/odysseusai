@@ -1,0 +1,80 @@
+diff --git a/services/search/providers.py b/services/search/providers.py
+--- a/services/search/providers.py
++++ b/services/search/providers.py
+@@ -129,7 +129,7 @@ _NEWS_HINTS = ("news", "nyheter", "headlines", "breaking", "latest", "today",
+-# routinely rate-limited / CAPTCHA-blocked on this instance and return nothing.
++# routinely rate-limited / CAPTCHA-blocked in container deployments.
+ # Pin engines that actually respond so non-news queries get results without any
+ # third-party API fallback. Override via SEARXNG_GENERAL_ENGINES.
+-_GENERAL_ENGINES = os.environ.get("SEARXNG_GENERAL_ENGINES", "bing,mojeek,presearch")
++_GENERAL_ENGINES = os.environ.get("SEARXNG_GENERAL_ENGINES", "bing,duckduckgo")
+
+
+ def searxng_search_api(query: str, count: Optional[int] = None, categories: str = "general",
+@@ -138,7 +138,10 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
+     count = count if count is not None else _get_result_count()
+     instance = _get_search_instance()
+     api_key = ""
+-    headers = {"User-Agent": WEB_FETCH_USER_AGENT}
++    headers = {
++        "User-Agent": WEB_FETCH_USER_AGENT,
++        "X-Real-IP": "127.0.0.1",
++    }
+     if api_key:
+         headers["Authorization"] = f"Bearer {api_key}"
+     # News/fresh queries do badly in the 'general' category — it favours
+@@ -166,11 +169,12 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
+             # so there's enough volume; the news category already biases recent.
+             params["time_range"] = "week" if time_filter in ("day", "week") else time_filter
+     else:
+-        params["categories"] = categories
+         # Route general queries to engines that aren't blocked (default general
+         # set returns 0 on this instance — see _GENERAL_ENGINES).
+         if categories == "general" and _GENERAL_ENGINES:
+             params["engines"] = _GENERAL_ENGINES
++        else:
++            params["categories"] = categories
+     try:
+         def _parse_results(results):
+             return [
+@@ -204,11 +208,12 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
+                 "q": query,
+                 "format": "json",
+                 "language": "en",
+-                "categories": "general",
+                 "safesearch": _safesearch_for("searxng"),
+             }
+             if _GENERAL_ENGINES:
+                 fallback["engines"] = _GENERAL_ENGINES
++            else:
++                fallback["categories"] = "general"
+             logger.info(
+                 "SearXNG news search returned 0 results for %r; retrying general engines",
+                 query,
+@@ -225,13 +230,10 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
+             active_params = fallback
+             parsed, data = _run(active_params)
+         if not parsed and active_params.get("engines"):
+-            fallback = dict(active_params)
+-            fallback.pop("engines", None)
+             logger.info(
+-                "SearXNG pinned engines returned 0 results for %r; retrying default engines",
++                "SearXNG pinned engines returned 0 results for %r; defaults remain disabled",
+                 query,
+             )
+-            parsed, data = _run(fallback)
+         logger.info(f"SearXNG JSON API returned {len(parsed)} results for: {query}")
+         if not parsed:
+             unresponsive = data.get("unresponsive_engines") if isinstance(data, dict) else None
+@@ -250,7 +252,10 @@ def searxng_search(query, max_results=10):
+     """Search using SearXNG instance - parsing HTML."""
+     instance = _get_search_instance()
+     api_key = ""
+-    req_headers = {"User-Agent": WEB_FETCH_USER_AGENT}
++    req_headers = {
++        "User-Agent": WEB_FETCH_USER_AGENT,
++        "X-Real-IP": "127.0.0.1",
++    }
+     if api_key:
+         req_headers["Authorization"] = f"Bearer {api_key}"
+     try:

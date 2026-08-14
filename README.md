@@ -120,10 +120,11 @@ SearXNG updates are handled as part of the same automation. The current
 upstream `latest` image is resolved to its readable version tag and immutable
 digest, then smoke-tested for clean startup and real search results before the
 deployment bundle is updated. A small packaging profile removes Tor-only and
-startup-network-dependent optional engines that otherwise emit initialization
-errors in this direct container deployment. Compose automatically migrates an
-existing SearXNG configuration volume to the current tested profile while
-preserving its secret key.
+startup-network-dependent optional engines that otherwise fail during startup.
+Odysseus is pinned to a tested general-search engine set and does not fall back
+to defaults that are consistently rate-limited or CAPTCHA-blocked in container
+deployments. Compose automatically migrates an existing SearXNG configuration
+volume to the current profile while preserving its secret key.
 
 The Compose package is also synchronized automatically from upstream `main`.
 The Odysseus source-build directive is replaced with the corresponding
@@ -140,12 +141,12 @@ Odysseus application code is built directly from
 [`odysseus-dev/odysseus`](https://github.com/odysseus-dev/odysseus). Two narrow
 compatibility changes are applied only to the temporary image build context:
 `mcp<2` keeps upstream `main` compatible with its bundled MCP 1.x servers, and
-the internal SearXNG client identifies local requests so the bundled search
-service does not treat normal Odysseus traffic as a missing-proxy error. Both
-changes are public, versioned, tested, and fingerprinted in the image metadata;
-they do not alter the upstream repository. Application features, bugs, and
-documentation belong to the upstream project. Image publishing and
-deployment-bundle issues belong in this repository.
+the internal SearXNG client uses engines verified against the bundled release
+and identifies local requests correctly. Both changes are public, versioned,
+tested, and fingerprinted in the image metadata; they do not alter the upstream
+repository. Application features, bugs, and documentation belong to the
+upstream project. Image publishing and deployment-bundle issues belong in this
+repository.
 
 ## License
 

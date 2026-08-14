@@ -79,15 +79,6 @@ grep -Fqx "  secret_key: \"odysseus-upgrade-test-secret\"" /etc/searxng/settings
 test -s /etc/searxng/limiter.toml
 '
 
-sleep 2
-"${compose[@]}" logs --no-color searxng > "${logs_file}" 2>&1
-if grep -Eq \
-  'Traceback \(most recent call last\):|sqlite3\.OperationalError|ERROR:searx\.engines:|ERROR:searx\.searx\.search\.processor:|ERROR:searx\.search\.processors:|missing config file: /etc/searxng/limiter\.toml|X-Forwarded-For nor X-Real-IP' \
-  "${logs_file}"; then
-  echo "SearXNG reported a critical startup or configuration error." >&2
-  exit 1
-fi
-
 "${compose[@]}" exec -T searxng python - <<'PY'
 import json
 import urllib.parse
@@ -99,7 +90,7 @@ params = urllib.parse.urlencode(
         "q": "Odysseus AI GitHub",
         "format": "json",
         "language": "en",
-        "engines": "bing,mojeek,presearch",
+        "engines": "bing,duckduckgo",
     }
 )
 request = urllib.request.Request(
@@ -112,3 +103,12 @@ with urllib.request.urlopen(request, timeout=45) as response:
 assert payload.get("results"), payload
 print(f"SearXNG smoke test passed with {len(payload['results'])} search results.")
 PY
+
+sleep 2
+"${compose[@]}" logs --no-color searxng > "${logs_file}" 2>&1
+if grep -Eq \
+  'Traceback \(most recent call last\):|sqlite3\.OperationalError|ERROR:searx\.engines:|ERROR:searx\.searx\.search\.processor:|ERROR:searx\.search\.processors:|ERROR:searx\.botdetection:|WARNING:searx\.network\.(brave|yep):|WARNING:searx\.engines\.(brave|startpage|yep):|missing config file: /etc/searxng/limiter\.toml|X-Forwarded-For nor X-Real-IP' \
+  "${logs_file}"; then
+  echo "SearXNG reported a critical startup, configuration, or request error." >&2
+  exit 1
+fi
