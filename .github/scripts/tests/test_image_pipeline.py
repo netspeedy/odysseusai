@@ -13,7 +13,9 @@ from image_pipeline import (  # noqa: E402
     apply_constraints,
     decide_action,
     dockerfile_base_references,
+    image_content_digests,
     promotion_command,
+    stable_channel_command,
     valid_version,
 )
 
@@ -41,6 +43,21 @@ class DockerfileParsingTests(unittest.TestCase):
         """
 
         self.assertEqual(dockerfile_base_references(dockerfile), ["python:3.14-slim"])
+
+
+class ManifestTests(unittest.TestCase):
+    def test_single_platform_index_resolves_to_its_runnable_manifest(self):
+        digest = "sha256:" + "c" * 64
+        image = {"manifest": {"digest": "sha256:" + "d" * 64}}
+        manifest = {"manifests": [{"digest": digest}]}
+
+        self.assertEqual(image_content_digests(image, manifest), {digest})
+
+    def test_image_manifest_resolves_to_its_own_digest(self):
+        digest = "sha256:" + "e" * 64
+        image = {"manifest": {"digest": digest}}
+
+        self.assertEqual(image_content_digests(image, {}), {digest})
 
 
 class DecisionTests(unittest.TestCase):
@@ -160,6 +177,33 @@ class PromotionTests(unittest.TestCase):
                 "ghcr.io/netspeedy/odysseusai:main",
                 "--tag",
                 "ghcr.io/netspeedy/odysseusai:2026.08.14.1",
+                f"ghcr.io/netspeedy/odysseusai@{digest}",
+            ],
+        )
+
+    def test_stable_channel_is_an_annotated_index_over_the_tested_manifest(self):
+        digest = "sha256:" + "b" * 64
+
+        command = stable_channel_command(
+            "ghcr.io/netspeedy/odysseusai",
+            digest,
+            "2026.08.14.1",
+            "abc123",
+            "Prebuilt Odysseus image",
+            "123.1",
+            "2026-08-14T12:00:00Z",
+        )
+
+        self.assertEqual(command[:4], ["docker", "buildx", "imagetools", "create"])
+        self.assertIn("index:io.netspeedy.odysseus.channel-pointer=stable", command)
+        self.assertIn(f"index:io.netspeedy.odysseus.stable-digest={digest}", command)
+        self.assertEqual(
+            command[-5:],
+            [
+                "--tag",
+                "ghcr.io/netspeedy/odysseusai:main",
+                "--tag",
+                "ghcr.io/netspeedy/odysseusai:latest",
                 f"ghcr.io/netspeedy/odysseusai@{digest}",
             ],
         )

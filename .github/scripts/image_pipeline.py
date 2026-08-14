@@ -22,6 +22,7 @@ DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 STABLE_VERSION_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.[1-9]\d*$")
 DEVELOPMENT_VERSION_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.[1-9]\d*-dev$")
 OCI_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
+OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
 REQUIREMENT_NAME_RE = re.compile(r"^([A-Za-z0-9_.-]+)")
 
 
@@ -115,6 +116,39 @@ def inspect_image(reference: str) -> dict[str, Any] | None:
     if not labels_raw:
         return None
 
+    labels = json.loads(labels_raw)
+    if labels is None:
+        raw_manifest = inspect_raw_manifest(reference)
+        descriptors = raw_manifest.get("manifests", [])
+        candidates = [
+            descriptor
+            for descriptor in descriptors
+            if descriptor.get("platform", {}).get("os") == "linux"
+            and descriptor.get("platform", {}).get("architecture") == "amd64"
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(
+                f"Expected one linux/amd64 image in {reference}, found {len(candidates)}"
+            )
+        repository = reference.split("@", 1)[0]
+        if repository.rfind(":") > repository.rfind("/"):
+            repository = repository[: repository.rfind(":")]
+        child_ref = f"{repository}@{candidates[0]['digest']}"
+        labels_raw = command_output(
+            [
+                "docker",
+                "buildx",
+                "imagetools",
+                "inspect",
+                child_ref,
+                "--format",
+                "{{json .Image.Config.Labels}}",
+            ]
+        )
+        labels = json.loads(labels_raw)
+        if not isinstance(labels, dict):
+            raise RuntimeError(f"Image labels are unavailable: {reference}")
+
     manifest_raw = command_output(
         [
             "docker",
@@ -127,9 +161,55 @@ def inspect_image(reference: str) -> dict[str, Any] | None:
         ]
     )
     return {
-        "labels": json.loads(labels_raw),
+        "labels": labels,
         "manifest": json.loads(manifest_raw),
     }
+
+
+def inspect_raw_manifest(reference: str) -> dict[str, Any]:
+    """Return the raw OCI manifest for an image reference."""
+    return json.loads(
+        command_output(
+            ["docker", "buildx", "imagetools", "inspect", reference, "--raw"]
+        )
+    )
+
+
+def image_content_digests(
+    image: dict[str, Any], raw_manifest: dict[str, Any]
+) -> set[str]:
+    """Return the runnable manifest digests represented by an image reference."""
+    descriptors = raw_manifest.get("manifests")
+    if descriptors is None:
+        digest = image.get("manifest", {}).get("digest", "")
+        if not DIGEST_RE.fullmatch(digest):
+            raise RuntimeError(f"Invalid image manifest digest: {digest}")
+        return {digest}
+
+    digests = {
+        descriptor.get("digest", "")
+        for descriptor in descriptors
+        if isinstance(descriptor, dict)
+    }
+    if not digests or any(not DIGEST_RE.fullmatch(digest) for digest in digests):
+        raise RuntimeError("Image index contains an invalid manifest descriptor")
+    return digests
+
+
+def require_same_image_content(
+    actual_image: dict[str, Any],
+    actual_manifest: dict[str, Any],
+    expected_image: dict[str, Any],
+    expected_manifest: dict[str, Any],
+    description: str,
+) -> None:
+    """Require two image references to resolve to the same runnable manifests."""
+    actual = image_content_digests(actual_image, actual_manifest)
+    expected = image_content_digests(expected_image, expected_manifest)
+    if actual != expected:
+        raise RuntimeError(
+            f"{description}: expected content {sorted(expected)!r}, found {sorted(actual)!r}"
+        )
 
 
 def resolve_base_images(dockerfile: Path) -> tuple[list[str], str]:
@@ -365,6 +445,7 @@ def plan(args: argparse.Namespace) -> None:
         "moving_tags": moving_tags,
         "packaging_constraint_fingerprint": constraint_fingerprint,
         "packaging_constraints": packaging_constraints,
+        "previous_channel_digest": current["manifest"]["digest"] if current else "",
         "reason": reason,
         "status": "planned",
         "upstream_sha": upstream_sha,
@@ -410,16 +491,16 @@ def verify(args: argparse.Namespace) -> None:
     image = inspect_image(image_ref)
     if image is None:
         raise RuntimeError(f"Published image is unavailable: {image_ref}")
-    raw_manifest = json.loads(
-        command_output(
-            ["docker", "buildx", "imagetools", "inspect", image_ref, "--raw"]
-        )
-    )
+    raw_manifest = inspect_raw_manifest(image_ref)
     labels = image["labels"]
 
-    require_equal(
-        image["manifest"].get("mediaType"), OCI_MANIFEST_MEDIA_TYPE, "Media type"
-    )
+    if image["manifest"].get("mediaType") not in {
+        OCI_MANIFEST_MEDIA_TYPE,
+        OCI_INDEX_MEDIA_TYPE,
+    }:
+        raise RuntimeError(
+            f"Unsupported media type: {image['manifest'].get('mediaType')!r}"
+        )
     require_equal(
         raw_manifest.get("annotations", {}).get("org.opencontainers.image.description"),
         description,
@@ -472,11 +553,15 @@ def verify(args: argparse.Namespace) -> None:
     version_image = inspect_image(f"{image_name}:{expected_version}")
     if version_image is None:
         raise RuntimeError(f"Version tag is unavailable: {expected_version}")
-    require_equal(
-        version_image["manifest"].get("digest"),
-        channel_digest,
-        "Version tag digest",
+    version_manifest = inspect_raw_manifest(f"{image_name}:{expected_version}")
+    require_same_image_content(
+        image,
+        raw_manifest,
+        version_image,
+        version_manifest,
+        "Channel content",
     )
+    version_digest = version_image["manifest"]["digest"]
 
     if branch == "main":
         latest_image = inspect_image(f"{image_name}:latest")
@@ -488,11 +573,12 @@ def verify(args: argparse.Namespace) -> None:
             "Latest tag digest",
         )
 
-    result["digest"] = channel_digest
+    result["channel_digest"] = channel_digest
+    result["digest"] = version_digest
     result["status"] = "published" if result["action"] == "build" else "current"
     write_json(result_path, result)
-    github_output({"digest": channel_digest, "version": expected_version})
-    print(f"Verified {image_ref}@{channel_digest}")
+    github_output({"digest": version_digest, "version": expected_version})
+    print(f"Verified {image_ref}@{channel_digest} contains {version_digest}")
 
 
 def promotion_command(image_name: str, digest: str, tags: list[str]) -> list[str]:
@@ -527,15 +613,179 @@ def promote(args: argparse.Namespace) -> None:
     print(f"Promoted {image_name}@{digest} to {', '.join(tags)}")
 
 
-def cleanup(args: argparse.Namespace) -> None:
-    """Delete an untagged candidate package version after a failed test."""
-    del args
-    token = os.environ["GH_TOKEN"]
-    owner = os.environ["GITHUB_REPOSITORY_OWNER"]
-    image_name = os.environ["IMAGE_NAME"]
-    digest = os.environ["IMAGE_DIGEST"]
+def stable_channel_command(
+    image_name: str,
+    digest: str,
+    version: str,
+    revision: str,
+    description: str,
+    publication: str,
+    created: str,
+) -> list[str]:
+    """Return the command that publishes the stable package landing version."""
     if not DIGEST_RE.fullmatch(digest):
-        raise RuntimeError(f"Invalid candidate digest: {digest}")
+        raise RuntimeError(f"Invalid stable digest: {digest}")
+    if not valid_version("main", version):
+        raise RuntimeError(f"Invalid stable version: {version}")
+
+    annotations = {
+        "org.opencontainers.image.title": "Odysseus AI",
+        "org.opencontainers.image.description": description,
+        "org.opencontainers.image.source": "https://github.com/netspeedy/odysseusai",
+        "org.opencontainers.image.url": "https://odysseus-dev.github.io/odysseus",
+        "org.opencontainers.image.documentation": "https://github.com/netspeedy/odysseusai#readme",
+        "org.opencontainers.image.revision": revision,
+        "org.opencontainers.image.version": version,
+        "org.opencontainers.image.created": created,
+        "org.opencontainers.image.licenses": "AGPL-3.0-or-later",
+        "io.netspeedy.odysseus.upstream": "https://github.com/odysseus-dev/odysseus",
+        "io.netspeedy.odysseus.channel": "main",
+        "io.netspeedy.odysseus.channel-pointer": "stable",
+        "io.netspeedy.odysseus.stable-digest": digest,
+        "io.netspeedy.odysseus.publication-run": publication,
+    }
+    command = ["docker", "buildx", "imagetools", "create"]
+    for key, value in annotations.items():
+        command.extend(["--annotation", f"index:{key}={value}"])
+    for tag in ("main", "latest"):
+        command.extend(["--tag", f"{image_name}:{tag}"])
+    command.append(f"{image_name}@{digest}")
+    return command
+
+
+def publish_stable_channel(args: argparse.Namespace) -> None:
+    """Publish stable last so GitHub Packages opens on the production channel."""
+    results = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in Path(args.results).glob("*.json")
+    ]
+    stable = next(
+        (result for result in results if result.get("branch") == "main"), None
+    )
+    if stable is None:
+        raise RuntimeError("Stable image result is unavailable")
+
+    image_name = os.environ["IMAGE_NAME"]
+    description = os.environ["IMAGE_DESCRIPTION"]
+    digest = stable.get("digest", "")
+    version = stable.get("version", "")
+    revision = stable.get("upstream_sha", "")
+    publication = f"{os.environ['GITHUB_RUN_ID']}.{os.environ['GITHUB_RUN_ATTEMPT']}"
+    created = (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+    source_ref = f"{image_name}@{digest}"
+    source_image = inspect_image(source_ref)
+    if source_image is None:
+        raise RuntimeError(f"Stable image is unavailable: {source_ref}")
+    source_manifest = inspect_raw_manifest(source_ref)
+
+    channel_ref = f"{image_name}:main"
+    channel_image = inspect_image(channel_ref)
+    channel_manifest = inspect_raw_manifest(channel_ref) if channel_image else {}
+    current_annotations = channel_manifest.get("annotations", {})
+    refresh = any(result.get("action") == "build" for result in results)
+    refresh = (
+        refresh
+        or current_annotations.get("io.netspeedy.odysseus.channel-pointer") != "stable"
+    )
+
+    if not refresh and channel_image is not None:
+        require_same_image_content(
+            channel_image,
+            channel_manifest,
+            source_image,
+            source_manifest,
+            "Stable channel content",
+        )
+        print(
+            "Stable package landing version is current at "
+            f"{channel_image['manifest']['digest']}"
+        )
+        github_output(
+            {"digest": channel_image["manifest"]["digest"], "status": "current"}
+        )
+        return
+
+    previous_digest = stable.get("previous_channel_digest", "")
+    previous_is_pointer = False
+    if DIGEST_RE.fullmatch(previous_digest) and previous_digest != digest:
+        previous_manifest = inspect_raw_manifest(f"{image_name}@{previous_digest}")
+        previous_is_pointer = (
+            previous_manifest.get("annotations", {}).get(
+                "io.netspeedy.odysseus.channel-pointer"
+            )
+            == "stable"
+        )
+
+    command_output(
+        stable_channel_command(
+            image_name,
+            digest,
+            version,
+            revision,
+            description,
+            publication,
+            created,
+        )
+    )
+
+    channel_image = inspect_image(channel_ref)
+    if channel_image is None:
+        raise RuntimeError("Stable main tag is unavailable after publication")
+    channel_manifest = inspect_raw_manifest(channel_ref)
+    require_equal(
+        channel_image["manifest"].get("mediaType"),
+        OCI_INDEX_MEDIA_TYPE,
+        "Stable channel media type",
+    )
+    require_same_image_content(
+        channel_image,
+        channel_manifest,
+        source_image,
+        source_manifest,
+        "Stable channel content",
+    )
+    require_equal(
+        channel_manifest.get("annotations", {}).get(
+            "io.netspeedy.odysseus.stable-digest"
+        ),
+        digest,
+        "Stable channel source digest",
+    )
+
+    latest_image = inspect_image(f"{image_name}:latest")
+    if latest_image is None:
+        raise RuntimeError("Stable latest tag is unavailable after publication")
+    require_equal(
+        latest_image["manifest"].get("digest"),
+        channel_image["manifest"].get("digest"),
+        "Stable moving tag digest",
+    )
+
+    channel_digest = channel_image["manifest"]["digest"]
+    if previous_is_pointer and previous_digest != channel_digest:
+        delete_untagged_package_version(
+            os.environ["GH_TOKEN"],
+            os.environ["GITHUB_REPOSITORY_OWNER"],
+            image_name,
+            previous_digest,
+            "superseded stable channel",
+        )
+    github_output({"digest": channel_digest, "status": "refreshed"})
+    print(f"Published stable package landing version {channel_digest}")
+
+
+def delete_untagged_package_version(
+    token: str, owner: str, image_name: str, digest: str, description: str
+) -> None:
+    """Delete one untagged GHCR package version once registry metadata settles."""
+    if not DIGEST_RE.fullmatch(digest):
+        raise RuntimeError(f"Invalid package digest: {digest}")
 
     package = urllib.parse.quote(image_name.rsplit("/", 1)[-1], safe="")
     versions_url = (
@@ -568,13 +818,27 @@ def cleanup(args: argparse.Namespace) -> None:
             )
             with urllib.request.urlopen(request, timeout=15):
                 pass
-            print(f"Deleted failed untagged candidate {digest}")
+            print(f"Deleted {description} package version {digest}")
             return
 
         if attempt < 9:
             time.sleep(2)
 
-    raise RuntimeError(f"Untagged candidate package version was not found: {digest}")
+    raise RuntimeError(
+        f"Untagged {description} package version was not found: {digest}"
+    )
+
+
+def cleanup(args: argparse.Namespace) -> None:
+    """Delete an untagged candidate package version after a failed test."""
+    del args
+    delete_untagged_package_version(
+        os.environ["GH_TOKEN"],
+        os.environ["GITHUB_REPOSITORY_OWNER"],
+        os.environ["IMAGE_NAME"],
+        os.environ["IMAGE_DIGEST"],
+        "failed candidate",
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -600,6 +864,12 @@ def parser() -> argparse.ArgumentParser:
 
     promote_parser = commands.add_parser("promote", help="Promote a tested digest")
     promote_parser.set_defaults(handler=promote)
+
+    stable_channel_parser = commands.add_parser(
+        "publish-stable-channel", help="Publish the stable package landing version"
+    )
+    stable_channel_parser.add_argument("--results", required=True)
+    stable_channel_parser.set_defaults(handler=publish_stable_channel)
 
     cleanup_parser = commands.add_parser(
         "cleanup", help="Delete a failed untagged candidate digest"
