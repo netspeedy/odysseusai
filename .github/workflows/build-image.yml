@@ -1,0 +1,253 @@
+name: Build Odysseus image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-image.yml
+      - .github/scripts/sync-upstream-runtime.sh
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Push even when the upstream SHA tag already exists
+        required: false
+        type: boolean
+        default: false
+  repository_dispatch:
+    types:
+      - upstream-updated
+
+permissions:
+  contents: read
+
+concurrency:
+  group: odysseusai-image
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/netspeedy/odysseusai
+  PLATFORMS: linux/amd64
+  UPSTREAM_REPOSITORY: odysseus-dev/odysseus
+  FORCE_BUILD: ${{ inputs.force || github.event.client_payload.force || false }}
+
+jobs:
+  sync-deployment:
+    name: Sync deployment package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout image repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: packaging
+
+      - name: Checkout upstream stable source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: main
+          fetch-depth: 1
+          path: upstream
+
+      - name: Sync upstream runtime files
+        working-directory: packaging
+        run: .github/scripts/sync-upstream-runtime.sh ../upstream .
+
+      - name: Validate deployment package
+        working-directory: packaging
+        run: docker compose --env-file .env.example config --quiet
+
+      - name: Publish upstream runtime changes
+        working-directory: packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add \
+            .env.example \
+            LICENSE \
+            docker-compose.yml \
+            config/searxng/settings.yml \
+            docker/gpu.amd.yml \
+            docker/gpu.nvidia.yml \
+            docker/host-docker.yml
+
+          if git diff --cached --quiet; then
+            echo "Deployment package already matches upstream main."
+            exit 0
+          fi
+
+          upstream_sha="$(git -C ../upstream rev-parse --short=12 HEAD)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: sync Odysseus runtime ${upstream_sha}"
+          git push origin HEAD:main
+
+  build:
+    name: Build and publish (${{ matrix.upstream_branch }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        upstream_branch:
+          - main
+          - dev
+
+    steps:
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ matrix.upstream_branch }}
+          fetch-depth: 1
+          path: upstream
+
+      - name: Read upstream revision
+        id: upstream
+        working-directory: upstream
+        shell: bash
+        env:
+          UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          build_created="$(git show -s --format=%cI HEAD)"
+
+          {
+            echo "sha=${sha}"
+            echo "short_sha=${short_sha}"
+            echo "sha_tag=sha-${short_sha}"
+            echo "build_created=${build_created}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check GitHub Container Registry image state
+        id: published
+        shell: bash
+        env:
+          SHA_TAG: ${{ steps.upstream.outputs.sha_tag }}
+          UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
+        run: |
+          set -euo pipefail
+
+          tag_digest() {
+            local tag="$1"
+            docker buildx imagetools inspect \
+              "${IMAGE_NAME}:${tag}" \
+              --format "{{.Manifest.Digest}}" \
+              2>/dev/null || true
+          }
+
+          sha_digest="$(tag_digest "${SHA_TAG}")"
+          branch_digest="$(tag_digest "${UPSTREAM_BRANCH}")"
+          latest_digest=""
+          if [ "${UPSTREAM_BRANCH}" = "main" ]; then
+            latest_digest="$(tag_digest latest)"
+          fi
+
+          {
+            echo "sha_digest=${sha_digest}"
+            echo "branch_digest=${branch_digest}"
+            echo "latest_digest=${latest_digest}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Decide whether to build, promote, or skip
+        id: decision
+        shell: bash
+        env:
+          BRANCH_DIGEST: ${{ steps.published.outputs.branch_digest }}
+          LATEST_DIGEST: ${{ steps.published.outputs.latest_digest }}
+          SHA_DIGEST: ${{ steps.published.outputs.sha_digest }}
+          UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
+        run: |
+          set -euo pipefail
+
+          action=skip
+          if [ "${FORCE_BUILD}" = "true" ] || [ -z "${SHA_DIGEST}" ]; then
+            action=build
+          elif [ "${BRANCH_DIGEST}" != "${SHA_DIGEST}" ]; then
+            action=promote
+          elif [ "${UPSTREAM_BRANCH}" = "main" ] && [ "${LATEST_DIGEST}" != "${SHA_DIGEST}" ]; then
+            action=promote
+          fi
+
+          echo "action=${action}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate image metadata
+        if: steps.decision.outputs.action == 'build'
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ matrix.upstream_branch }}
+            type=raw,value=${{ steps.upstream.outputs.sha_tag }}
+            type=raw,value=latest,enable=${{ matrix.upstream_branch == 'main' }}
+          labels: |
+            org.opencontainers.image.title=Odysseus AI
+            org.opencontainers.image.description=Prebuilt Odysseus image from odysseus-dev/odysseus.
+            org.opencontainers.image.source=https://github.com/netspeedy/odysseusai
+            org.opencontainers.image.url=https://github.com/odysseus-dev/odysseus
+            org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
+            org.opencontainers.image.revision=${{ steps.upstream.outputs.sha }}
+            org.opencontainers.image.version=${{ steps.upstream.outputs.sha_tag }}
+            org.opencontainers.image.created=${{ steps.upstream.outputs.build_created }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+            io.netspeedy.odysseus.upstream=https://github.com/odysseus-dev/odysseus
+
+      - name: Build and push image
+        if: steps.decision.outputs.action == 'build'
+        uses: docker/build-push-action@v6
+        with:
+          context: upstream
+          push: true
+          platforms: ${{ env.PLATFORMS }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=odysseus-${{ matrix.upstream_branch }}
+          cache-to: type=gha,mode=max,scope=odysseus-${{ matrix.upstream_branch }}
+
+      - name: Promote existing immutable image
+        if: steps.decision.outputs.action == 'promote'
+        shell: bash
+        env:
+          SHA_TAG: ${{ steps.upstream.outputs.sha_tag }}
+          UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
+        run: |
+          set -euo pipefail
+
+          destination_tags=(--tag "${IMAGE_NAME}:${UPSTREAM_BRANCH}")
+          if [ "${UPSTREAM_BRANCH}" = "main" ]; then
+            destination_tags+=(--tag "${IMAGE_NAME}:latest")
+          fi
+
+          docker buildx imagetools create \
+            --prefer-index=false \
+            "${destination_tags[@]}" \
+            "${IMAGE_NAME}:${SHA_TAG}"
+
+      - name: Skip unchanged upstream revision
+        if: steps.decision.outputs.action == 'skip'
+        shell: bash
+        run: |
+          echo "${{ matrix.upstream_branch }} already points at ${IMAGE_NAME}:${{ steps.upstream.outputs.sha_tag }}."
