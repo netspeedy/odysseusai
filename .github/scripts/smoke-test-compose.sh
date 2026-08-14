@@ -13,6 +13,9 @@ logs_file="${work_dir}/odysseus.log"
 export APP_DATA_DIR="${work_dir}/data"
 export APP_LOGS_DIR="${work_dir}/logs"
 export ODYSSEUS_CANDIDATE_IMAGE="${image_ref}"
+PGID="$(id -g)"
+PUID="$(id -u)"
+export PGID PUID
 
 compose=(
   docker compose
