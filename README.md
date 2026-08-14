@@ -106,6 +106,10 @@ changes. Stable and development builds have separate immutable CalVer tags,
 while `latest`, `main`, and `dev` always point to the current image for their
 channel.
 
+Every candidate image must start successfully, answer its health check, and
+pass bundled MCP compatibility checks before any channel or immutable tag is
+published.
+
 The Compose package is also synchronized automatically from upstream `main`.
 The Odysseus source-build directive is replaced with the corresponding
 `ghcr.io/netspeedy/odysseusai` image; upstream service versions and runtime
@@ -116,11 +120,12 @@ settings are otherwise preserved.
 This is an independent container packaging project. It is not maintained by,
 affiliated with, or endorsed by the Odysseus project.
 
-Odysseus source code is built directly from
+Odysseus application code is built directly from
 [`odysseus-dev/odysseus`](https://github.com/odysseus-dev/odysseus) without
-application patches. Application features, bugs, and documentation belong to
-the upstream project. Image publishing and deployment-bundle issues belong in
-this repository.
+code patches. Narrow dependency constraints may be applied when necessary to
+keep published images runnable while an upstream branch catches up. Application
+features, bugs, and documentation belong to the upstream project. Image
+publishing and deployment-bundle issues belong in this repository.
 
 ## License
 

@@ -2,13 +2,20 @@
 
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from image_pipeline import decide_action, dockerfile_base_references, valid_version  # noqa: E402
+from image_pipeline import (  # noqa: E402
+    apply_constraints,
+    decide_action,
+    dockerfile_base_references,
+    promotion_command,
+    valid_version,
+)
 
 
 def image_state(*, digest: str, revision: str, schema: str, base: str, version: str):
@@ -18,6 +25,7 @@ def image_state(*, digest: str, revision: str, schema: str, base: str, version: 
             "org.opencontainers.image.revision": revision,
             "org.opencontainers.image.version": version,
             "io.netspeedy.odysseus.packaging-schema": schema,
+            "io.netspeedy.odysseus.packaging-constraint-fingerprint": "sha256:constraints",
             "io.netspeedy.odysseus.base-image-fingerprint": base,
         },
         "manifest": {"digest": digest},
@@ -57,6 +65,7 @@ class DecisionTests(unittest.TestCase):
             branch="main",
             upstream_sha="abc123",
             packaging_schema="5",
+            constraint_fingerprint="sha256:constraints",
             base_fingerprint="sha256:base",
             current=self.current,
             latest=self.latest,
@@ -71,6 +80,7 @@ class DecisionTests(unittest.TestCase):
             branch="main",
             upstream_sha="abc123",
             packaging_schema="5",
+            constraint_fingerprint="sha256:constraints",
             base_fingerprint="sha256:new-base",
             current=self.current,
             latest=self.latest,
@@ -83,6 +93,76 @@ class DecisionTests(unittest.TestCase):
     def test_development_version_uses_suffix(self):
         self.assertTrue(valid_version("dev", "2026.08.14.1-dev"))
         self.assertFalse(valid_version("dev", "2026.08.14.1"))
+
+
+class ConstraintTests(unittest.TestCase):
+    def test_constraint_is_added_to_an_unbounded_upstream_requirement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "requirements.txt").write_text(
+                "fastapi\nmcp\nuvicorn\n", encoding="utf-8"
+            )
+            constraints = root / "constraints.txt"
+            constraints.write_text("mcp<2\n", encoding="utf-8")
+
+            configured, fingerprint, changed = apply_constraints(source, constraints)
+
+            self.assertEqual(configured, ["mcp<2"])
+            self.assertTrue(fingerprint.startswith("sha256:"))
+            self.assertTrue(changed)
+            self.assertIn(
+                "\n# Compatibility constraints applied by netspeedy/odysseusai packaging.\nmcp<2\n",
+                (source / "requirements.txt").read_text(encoding="utf-8"),
+            )
+
+    def test_existing_constraint_is_not_duplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "requirements.txt").write_text("mcp<2\n", encoding="utf-8")
+            constraints = root / "constraints.txt"
+            constraints.write_text("mcp<2\n", encoding="utf-8")
+
+            _, _, changed = apply_constraints(source, constraints)
+
+            self.assertFalse(changed)
+            self.assertEqual(
+                (source / "requirements.txt").read_text(encoding="utf-8"),
+                "mcp<2\n",
+            )
+
+
+class PromotionTests(unittest.TestCase):
+    def test_promotion_preserves_the_tested_single_platform_manifest(self):
+        digest = "sha256:" + "a" * 64
+
+        command = promotion_command(
+            "ghcr.io/netspeedy/odysseusai",
+            digest,
+            [
+                "ghcr.io/netspeedy/odysseusai:main",
+                "ghcr.io/netspeedy/odysseusai:2026.08.14.1",
+            ],
+        )
+
+        self.assertEqual(
+            command,
+            [
+                "docker",
+                "buildx",
+                "imagetools",
+                "create",
+                "--prefer-index=false",
+                "--tag",
+                "ghcr.io/netspeedy/odysseusai:main",
+                "--tag",
+                "ghcr.io/netspeedy/odysseusai:2026.08.14.1",
+                f"ghcr.io/netspeedy/odysseusai@{digest}",
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -12,18 +12,22 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import time
 from typing import Any
+import urllib.parse
+import urllib.request
 
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 STABLE_VERSION_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.[1-9]\d*$")
-DEVELOPMENT_VERSION_RE = re.compile(
-    r"^\d{4}\.\d{2}\.\d{2}\.[1-9]\d*-dev$"
-)
+DEVELOPMENT_VERSION_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.[1-9]\d*-dev$")
 OCI_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
+REQUIREMENT_NAME_RE = re.compile(r"^([A-Za-z0-9_.-]+)")
 
 
-def command_output(args: list[str], *, check: bool = True, cwd: Path | None = None) -> str:
+def command_output(
+    args: list[str], *, check: bool = True, cwd: Path | None = None
+) -> str:
     """Run a command and return trimmed stdout."""
     completed = subprocess.run(
         args,
@@ -153,6 +157,70 @@ def resolve_base_images(dockerfile: Path) -> tuple[list[str], str]:
     return resolved, fingerprint
 
 
+def requirement_name(requirement: str) -> str:
+    """Return a normalized package name from a requirement line."""
+    match = REQUIREMENT_NAME_RE.match(requirement.strip())
+    if not match:
+        raise ValueError(f"Invalid requirement: {requirement}")
+    return match.group(1).lower().replace("_", "-")
+
+
+def configured_constraints(path: Path) -> list[str]:
+    """Return active packaging constraints from a requirements file."""
+    constraints = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not constraints:
+        raise ValueError(f"Packaging constraint file is empty: {path}")
+    return constraints
+
+
+def apply_constraints(
+    source: Path, constraints_path: Path
+) -> tuple[list[str], str, bool]:
+    """Apply packaging constraints to the upstream build context."""
+    requirements_path = source / "requirements.txt"
+    requirements_text = requirements_path.read_text(encoding="utf-8")
+    requirements = [
+        line.strip()
+        for line in requirements_text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    requirement_names = {requirement_name(line) for line in requirements}
+    constraints = configured_constraints(constraints_path)
+
+    missing = [
+        constraint
+        for constraint in constraints
+        if requirement_name(constraint) not in requirement_names
+    ]
+    if missing:
+        raise RuntimeError(
+            "Packaging constraints no longer match upstream requirements: "
+            + ", ".join(missing)
+        )
+
+    additions = [
+        constraint for constraint in constraints if constraint not in requirements
+    ]
+    if additions:
+        block = [
+            "",
+            "# Compatibility constraints applied by netspeedy/odysseusai packaging.",
+            *additions,
+        ]
+        requirements_path.write_text(
+            requirements_text.rstrip() + "\n" + "\n".join(block) + "\n",
+            encoding="utf-8",
+        )
+
+    canonical = "\n".join(sorted(constraints))
+    fingerprint = f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
+    return constraints, fingerprint, bool(additions)
+
+
 def valid_version(branch: str, version: str) -> bool:
     """Return whether a published version matches the channel format."""
     pattern = STABLE_VERSION_RE if branch == "main" else DEVELOPMENT_VERSION_RE
@@ -164,6 +232,7 @@ def decide_action(
     branch: str,
     upstream_sha: str,
     packaging_schema: str,
+    constraint_fingerprint: str,
     base_fingerprint: str,
     current: dict[str, Any] | None,
     latest: dict[str, Any] | None,
@@ -181,6 +250,11 @@ def decide_action(
         reasons.append("Upstream revision changed")
     if labels.get("io.netspeedy.odysseus.packaging-schema") != packaging_schema:
         reasons.append("Packaging definition changed")
+    if (
+        labels.get("io.netspeedy.odysseus.packaging-constraint-fingerprint")
+        != constraint_fingerprint
+    ):
+        reasons.append("Packaging constraints changed")
     if labels.get("io.netspeedy.odysseus.base-image-fingerprint") != base_fingerprint:
         reasons.append("Base image changed")
     if not valid_version(branch, labels.get("org.opencontainers.image.version", "")):
@@ -224,7 +298,26 @@ def github_output(values: dict[str, str]) -> None:
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write a deterministic JSON result artifact."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def prepare(args: argparse.Namespace) -> None:
+    """Apply packaging constraints before image planning and building."""
+    constraints, fingerprint, changed = apply_constraints(
+        Path(args.source), Path(args.constraints)
+    )
+    constraints_value = ",".join(constraints)
+    github_output(
+        {
+            "changed": str(changed).lower(),
+            "constraint_fingerprint": fingerprint,
+            "constraints": constraints_value,
+        }
+    )
+    action = "applied" if changed else "already satisfied"
+    print(f"Packaging constraints {action}: {constraints_value}")
 
 
 def plan(args: argparse.Namespace) -> None:
@@ -235,6 +328,8 @@ def plan(args: argparse.Namespace) -> None:
     branch = os.environ["UPSTREAM_BRANCH"]
     channel_name = os.environ["CHANNEL_NAME"]
     packaging_schema = os.environ["PACKAGING_SCHEMA"]
+    packaging_constraints = os.environ["PACKAGING_CONSTRAINTS"]
+    constraint_fingerprint = os.environ["PACKAGING_CONSTRAINT_FINGERPRINT"]
     force = os.environ.get("FORCE_BUILD", "false").lower() == "true"
     moving_tags = [tag.strip() for tag in os.environ["MOVING_TAGS"].split(",")]
 
@@ -246,6 +341,7 @@ def plan(args: argparse.Namespace) -> None:
         branch=branch,
         upstream_sha=upstream_sha,
         packaging_schema=packaging_schema,
+        constraint_fingerprint=constraint_fingerprint,
         base_fingerprint=base_fingerprint,
         current=current,
         latest=latest,
@@ -267,6 +363,8 @@ def plan(args: argparse.Namespace) -> None:
         "branch": branch,
         "channel": channel_name,
         "moving_tags": moving_tags,
+        "packaging_constraint_fingerprint": constraint_fingerprint,
+        "packaging_constraints": packaging_constraints,
         "reason": reason,
         "status": "planned",
         "upstream_sha": upstream_sha,
@@ -302,6 +400,8 @@ def verify(args: argparse.Namespace) -> None:
     branch = os.environ["UPSTREAM_BRANCH"]
     upstream_sha = os.environ["UPSTREAM_SHA"]
     packaging_schema = os.environ["PACKAGING_SCHEMA"]
+    packaging_constraints = os.environ["PACKAGING_CONSTRAINTS"]
+    constraint_fingerprint = os.environ["PACKAGING_CONSTRAINT_FINGERPRINT"]
     expected_version = os.environ["EXPECTED_VERSION"]
     base_fingerprint = os.environ["BASE_IMAGE_FINGERPRINT"]
     base_images = os.environ["BASE_IMAGES"]
@@ -311,19 +411,35 @@ def verify(args: argparse.Namespace) -> None:
     if image is None:
         raise RuntimeError(f"Published image is unavailable: {image_ref}")
     raw_manifest = json.loads(
-        command_output(["docker", "buildx", "imagetools", "inspect", image_ref, "--raw"])
+        command_output(
+            ["docker", "buildx", "imagetools", "inspect", image_ref, "--raw"]
+        )
     )
     labels = image["labels"]
 
-    require_equal(image["manifest"].get("mediaType"), OCI_MANIFEST_MEDIA_TYPE, "Media type")
+    require_equal(
+        image["manifest"].get("mediaType"), OCI_MANIFEST_MEDIA_TYPE, "Media type"
+    )
     require_equal(
         raw_manifest.get("annotations", {}).get("org.opencontainers.image.description"),
         description,
         "Manifest description",
     )
-    require_equal(labels.get("org.opencontainers.image.description"), description, "Image description")
-    require_equal(labels.get("org.opencontainers.image.revision"), upstream_sha, "Upstream revision")
-    require_equal(labels.get("org.opencontainers.image.version"), expected_version, "Image version")
+    require_equal(
+        labels.get("org.opencontainers.image.description"),
+        description,
+        "Image description",
+    )
+    require_equal(
+        labels.get("org.opencontainers.image.revision"),
+        upstream_sha,
+        "Upstream revision",
+    )
+    require_equal(
+        labels.get("org.opencontainers.image.version"),
+        expected_version,
+        "Image version",
+    )
     require_equal(labels.get("io.netspeedy.odysseus.channel"), branch, "Image channel")
     require_equal(
         labels.get("io.netspeedy.odysseus.packaging-schema"),
@@ -331,11 +447,23 @@ def verify(args: argparse.Namespace) -> None:
         "Packaging schema",
     )
     require_equal(
+        labels.get("io.netspeedy.odysseus.packaging-constraints"),
+        packaging_constraints,
+        "Packaging constraints",
+    )
+    require_equal(
+        labels.get("io.netspeedy.odysseus.packaging-constraint-fingerprint"),
+        constraint_fingerprint,
+        "Packaging constraint fingerprint",
+    )
+    require_equal(
         labels.get("io.netspeedy.odysseus.base-image-fingerprint"),
         base_fingerprint,
         "Base image fingerprint",
     )
-    require_equal(labels.get("io.netspeedy.odysseus.base-images"), base_images, "Base images")
+    require_equal(
+        labels.get("io.netspeedy.odysseus.base-images"), base_images, "Base images"
+    )
 
     if not valid_version(branch, expected_version):
         raise RuntimeError(f"Invalid {branch} CalVer tag: {expected_version}")
@@ -367,10 +495,99 @@ def verify(args: argparse.Namespace) -> None:
     print(f"Verified {image_ref}@{channel_digest}")
 
 
+def promotion_command(image_name: str, digest: str, tags: list[str]) -> list[str]:
+    """Return a command that copies one tested manifest to its publication tags."""
+    if not DIGEST_RE.fullmatch(digest):
+        raise RuntimeError(f"Invalid candidate digest: {digest}")
+    if not tags:
+        raise RuntimeError("No promotion tags were supplied")
+    if any(not tag.startswith(f"{image_name}:") for tag in tags):
+        raise RuntimeError(f"Promotion tags must belong to {image_name}: {tags}")
+
+    command = [
+        "docker",
+        "buildx",
+        "imagetools",
+        "create",
+        "--prefer-index=false",
+    ]
+    for tag in tags:
+        command.extend(["--tag", tag])
+    command.append(f"{image_name}@{digest}")
+    return command
+
+
+def promote(args: argparse.Namespace) -> None:
+    """Promote a tested digest to its channel and immutable tags."""
+    del args
+    image_name = os.environ["IMAGE_NAME"]
+    digest = os.environ["IMAGE_DIGEST"]
+    tags = [tag.strip() for tag in os.environ["TAGS"].splitlines() if tag.strip()]
+    command_output(promotion_command(image_name, digest, tags))
+    print(f"Promoted {image_name}@{digest} to {', '.join(tags)}")
+
+
+def cleanup(args: argparse.Namespace) -> None:
+    """Delete an untagged candidate package version after a failed test."""
+    del args
+    token = os.environ["GH_TOKEN"]
+    owner = os.environ["GITHUB_REPOSITORY_OWNER"]
+    image_name = os.environ["IMAGE_NAME"]
+    digest = os.environ["IMAGE_DIGEST"]
+    if not DIGEST_RE.fullmatch(digest):
+        raise RuntimeError(f"Invalid candidate digest: {digest}")
+
+    package = urllib.parse.quote(image_name.rsplit("/", 1)[-1], safe="")
+    versions_url = (
+        f"https://api.github.com/orgs/{owner}/packages/container/{package}/versions"
+        "?per_page=100"
+    )
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    for attempt in range(10):
+        with urllib.request.urlopen(
+            urllib.request.Request(versions_url, headers=headers), timeout=15
+        ) as response:
+            versions = json.load(response)
+
+        candidates = [
+            version
+            for version in versions
+            if version.get("name") == digest
+            and not version.get("metadata", {}).get("container", {}).get("tags", [])
+        ]
+        if candidates:
+            version_id = candidates[0]["id"]
+            delete_url = versions_url.split("?", 1)[0] + f"/{version_id}"
+            request = urllib.request.Request(
+                delete_url, headers=headers, method="DELETE"
+            )
+            with urllib.request.urlopen(request, timeout=15):
+                pass
+            print(f"Deleted failed untagged candidate {digest}")
+            return
+
+        if attempt < 9:
+            time.sleep(2)
+
+    raise RuntimeError(f"Untagged candidate package version was not found: {digest}")
+
+
 def parser() -> argparse.ArgumentParser:
     """Build the command-line parser."""
     cli = argparse.ArgumentParser(description=__doc__)
     commands = cli.add_subparsers(dest="command", required=True)
+
+    prepare_parser = commands.add_parser(
+        "prepare", help="Apply packaging constraints to the build context"
+    )
+    prepare_parser.add_argument("--source", required=True)
+    prepare_parser.add_argument("--constraints", required=True)
+    prepare_parser.set_defaults(handler=prepare)
 
     plan_parser = commands.add_parser("plan", help="Plan an image publication")
     plan_parser.add_argument("--source", required=True)
@@ -380,6 +597,14 @@ def parser() -> argparse.ArgumentParser:
     verify_parser = commands.add_parser("verify", help="Verify a published image")
     verify_parser.add_argument("--result", required=True)
     verify_parser.set_defaults(handler=verify)
+
+    promote_parser = commands.add_parser("promote", help="Promote a tested digest")
+    promote_parser.set_defaults(handler=promote)
+
+    cleanup_parser = commands.add_parser(
+        "cleanup", help="Delete a failed untagged candidate digest"
+    )
+    cleanup_parser.set_defaults(handler=cleanup)
     return cli
 
 
