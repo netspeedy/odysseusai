@@ -301,6 +301,27 @@ def apply_constraints(
     return constraints, fingerprint, bool(additions)
 
 
+def apply_patches(source: Path, patches_dir: Path) -> tuple[list[str], str]:
+    """Apply versioned packaging patches to a fresh upstream checkout."""
+    patches = sorted(patches_dir.glob("*.patch"))
+    if not patches:
+        raise ValueError(f"Packaging patch directory is empty: {patches_dir}")
+
+    canonical_parts: list[str] = []
+    for patch in patches:
+        patch_text = patch.read_text(encoding="utf-8")
+        if not patch_text.strip():
+            raise ValueError(f"Packaging patch is empty: {patch}")
+        canonical_parts.append(f"{patch.name}\n{patch_text}")
+        patch_path = str(patch.resolve())
+        command_output(["git", "apply", "--check", patch_path], cwd=source)
+        command_output(["git", "apply", patch_path], cwd=source)
+
+    canonical = "\n".join(canonical_parts)
+    fingerprint = f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
+    return [patch.name for patch in patches], fingerprint
+
+
 def valid_version(branch: str, version: str) -> bool:
     """Return whether a published version matches the channel format."""
     pattern = STABLE_VERSION_RE if branch == "main" else DEVELOPMENT_VERSION_RE
@@ -313,6 +334,7 @@ def decide_action(
     upstream_sha: str,
     packaging_schema: str,
     constraint_fingerprint: str,
+    patch_fingerprint: str,
     base_fingerprint: str,
     current: dict[str, Any] | None,
     latest: dict[str, Any] | None,
@@ -335,6 +357,11 @@ def decide_action(
         != constraint_fingerprint
     ):
         reasons.append("Packaging constraints changed")
+    if (
+        labels.get("io.netspeedy.odysseus.packaging-patch-fingerprint")
+        != patch_fingerprint
+    ):
+        reasons.append("Packaging patches changed")
     if labels.get("io.netspeedy.odysseus.base-image-fingerprint") != base_fingerprint:
         reasons.append("Base image changed")
     if not valid_version(branch, labels.get("org.opencontainers.image.version", "")):
@@ -384,20 +411,27 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def prepare(args: argparse.Namespace) -> None:
-    """Apply packaging constraints before image planning and building."""
-    constraints, fingerprint, changed = apply_constraints(
+    """Apply packaging compatibility changes before planning and building."""
+    constraints, constraint_fingerprint, changed = apply_constraints(
         Path(args.source), Path(args.constraints)
     )
+    patches, patch_fingerprint = apply_patches(
+        Path(args.source), Path(args.patches)
+    )
     constraints_value = ",".join(constraints)
+    patches_value = ",".join(patches)
     github_output(
         {
             "changed": str(changed).lower(),
-            "constraint_fingerprint": fingerprint,
+            "constraint_fingerprint": constraint_fingerprint,
             "constraints": constraints_value,
+            "patch_fingerprint": patch_fingerprint,
+            "patches": patches_value,
         }
     )
     action = "applied" if changed else "already satisfied"
     print(f"Packaging constraints {action}: {constraints_value}")
+    print(f"Packaging patches applied: {patches_value}")
 
 
 def plan(args: argparse.Namespace) -> None:
@@ -410,6 +444,8 @@ def plan(args: argparse.Namespace) -> None:
     packaging_schema = os.environ["PACKAGING_SCHEMA"]
     packaging_constraints = os.environ["PACKAGING_CONSTRAINTS"]
     constraint_fingerprint = os.environ["PACKAGING_CONSTRAINT_FINGERPRINT"]
+    packaging_patches = os.environ["PACKAGING_PATCHES"]
+    patch_fingerprint = os.environ["PACKAGING_PATCH_FINGERPRINT"]
     force = os.environ.get("FORCE_BUILD", "false").lower() == "true"
     moving_tags = [tag.strip() for tag in os.environ["MOVING_TAGS"].split(",")]
 
@@ -422,6 +458,7 @@ def plan(args: argparse.Namespace) -> None:
         upstream_sha=upstream_sha,
         packaging_schema=packaging_schema,
         constraint_fingerprint=constraint_fingerprint,
+        patch_fingerprint=patch_fingerprint,
         base_fingerprint=base_fingerprint,
         current=current,
         latest=latest,
@@ -445,6 +482,8 @@ def plan(args: argparse.Namespace) -> None:
         "moving_tags": moving_tags,
         "packaging_constraint_fingerprint": constraint_fingerprint,
         "packaging_constraints": packaging_constraints,
+        "packaging_patch_fingerprint": patch_fingerprint,
+        "packaging_patches": packaging_patches,
         "previous_channel_digest": current["manifest"]["digest"] if current else "",
         "reason": reason,
         "status": "planned",
@@ -483,6 +522,8 @@ def verify(args: argparse.Namespace) -> None:
     packaging_schema = os.environ["PACKAGING_SCHEMA"]
     packaging_constraints = os.environ["PACKAGING_CONSTRAINTS"]
     constraint_fingerprint = os.environ["PACKAGING_CONSTRAINT_FINGERPRINT"]
+    packaging_patches = os.environ["PACKAGING_PATCHES"]
+    patch_fingerprint = os.environ["PACKAGING_PATCH_FINGERPRINT"]
     expected_version = os.environ["EXPECTED_VERSION"]
     base_fingerprint = os.environ["BASE_IMAGE_FINGERPRINT"]
     base_images = os.environ["BASE_IMAGES"]
@@ -536,6 +577,16 @@ def verify(args: argparse.Namespace) -> None:
         labels.get("io.netspeedy.odysseus.packaging-constraint-fingerprint"),
         constraint_fingerprint,
         "Packaging constraint fingerprint",
+    )
+    require_equal(
+        labels.get("io.netspeedy.odysseus.packaging-patches"),
+        packaging_patches,
+        "Packaging patches",
+    )
+    require_equal(
+        labels.get("io.netspeedy.odysseus.packaging-patch-fingerprint"),
+        patch_fingerprint,
+        "Packaging patch fingerprint",
     )
     require_equal(
         labels.get("io.netspeedy.odysseus.base-image-fingerprint"),
@@ -847,10 +898,11 @@ def parser() -> argparse.ArgumentParser:
     commands = cli.add_subparsers(dest="command", required=True)
 
     prepare_parser = commands.add_parser(
-        "prepare", help="Apply packaging constraints to the build context"
+        "prepare", help="Apply packaging compatibility changes to the build context"
     )
     prepare_parser.add_argument("--source", required=True)
     prepare_parser.add_argument("--constraints", required=True)
+    prepare_parser.add_argument("--patches", required=True)
     prepare_parser.set_defaults(handler=prepare)
 
     plan_parser = commands.add_parser("plan", help="Plan an image publication")

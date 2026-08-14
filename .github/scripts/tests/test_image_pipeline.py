@@ -11,6 +11,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from image_pipeline import (  # noqa: E402
     apply_constraints,
+    apply_patches,
     decide_action,
     dockerfile_base_references,
     image_content_digests,
@@ -28,6 +29,7 @@ def image_state(*, digest: str, revision: str, schema: str, base: str, version: 
             "org.opencontainers.image.version": version,
             "io.netspeedy.odysseus.packaging-schema": schema,
             "io.netspeedy.odysseus.packaging-constraint-fingerprint": "sha256:constraints",
+            "io.netspeedy.odysseus.packaging-patch-fingerprint": "sha256:patches",
             "io.netspeedy.odysseus.base-image-fingerprint": base,
         },
         "manifest": {"digest": digest},
@@ -83,6 +85,7 @@ class DecisionTests(unittest.TestCase):
             upstream_sha="abc123",
             packaging_schema="5",
             constraint_fingerprint="sha256:constraints",
+            patch_fingerprint="sha256:patches",
             base_fingerprint="sha256:base",
             current=self.current,
             latest=self.latest,
@@ -98,6 +101,7 @@ class DecisionTests(unittest.TestCase):
             upstream_sha="abc123",
             packaging_schema="5",
             constraint_fingerprint="sha256:constraints",
+            patch_fingerprint="sha256:patches",
             base_fingerprint="sha256:new-base",
             current=self.current,
             latest=self.latest,
@@ -106,6 +110,22 @@ class DecisionTests(unittest.TestCase):
 
         self.assertEqual(action, "build")
         self.assertIn("Base image changed", reason)
+
+    def test_packaging_patch_change_triggers_build(self):
+        action, reason = decide_action(
+            branch="main",
+            upstream_sha="abc123",
+            packaging_schema="5",
+            constraint_fingerprint="sha256:constraints",
+            patch_fingerprint="sha256:new-patches",
+            base_fingerprint="sha256:base",
+            current=self.current,
+            latest=self.latest,
+            force=False,
+        )
+
+        self.assertEqual(action, "build")
+        self.assertIn("Packaging patches changed", reason)
 
     def test_development_version_uses_suffix(self):
         self.assertTrue(valid_version("dev", "2026.08.14.1-dev"))
@@ -149,6 +169,36 @@ class ConstraintTests(unittest.TestCase):
             self.assertEqual(
                 (source / "requirements.txt").read_text(encoding="utf-8"),
                 "mcp<2\n",
+            )
+
+
+class PatchTests(unittest.TestCase):
+    def test_patch_is_applied_and_fingerprinted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            patches = root / "patches"
+            source.mkdir()
+            patches.mkdir()
+            (source / "example.txt").write_text("before\n", encoding="utf-8")
+            (patches / "0001-example.patch").write_text(
+                """diff --git a/example.txt b/example.txt
+--- a/example.txt
++++ b/example.txt
+@@ -1 +1 @@
+-before
++after
+""",
+                encoding="utf-8",
+            )
+
+            configured, fingerprint = apply_patches(source, patches)
+
+            self.assertEqual(configured, ["0001-example.patch"])
+            self.assertTrue(fingerprint.startswith("sha256:"))
+            self.assertEqual(
+                (source / "example.txt").read_text(encoding="utf-8"),
+                "after\n",
             )
 
 

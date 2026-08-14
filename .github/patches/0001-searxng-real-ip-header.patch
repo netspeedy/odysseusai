@@ -1,0 +1,27 @@
+diff --git a/services/search/providers.py b/services/search/providers.py
+--- a/services/search/providers.py
++++ b/services/search/providers.py
+@@ -138,7 +138,10 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
+     count = count if count is not None else _get_result_count()
+     instance = _get_search_instance()
+     api_key = ""
+-    headers = {"User-Agent": WEB_FETCH_USER_AGENT}
++    headers = {
++        "User-Agent": WEB_FETCH_USER_AGENT,
++        "X-Real-IP": "127.0.0.1",
++    }
+     if api_key:
+         headers["Authorization"] = f"Bearer {api_key}"
+     # News/fresh queries do badly in the 'general' category — it favours
+@@ -250,7 +253,10 @@ def searxng_search(query, max_results=10):
+     """Search using SearXNG instance - parsing HTML."""
+     instance = _get_search_instance()
+     api_key = ""
+-    req_headers = {"User-Agent": WEB_FETCH_USER_AGENT}
++    req_headers = {
++        "User-Agent": WEB_FETCH_USER_AGENT,
++        "X-Real-IP": "127.0.0.1",
++    }
+     if api_key:
+         req_headers["Authorization"] = f"Bearer {api_key}"
+     try:

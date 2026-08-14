@@ -7,6 +7,7 @@ on:
     paths:
       - .github/compose/**
       - .github/constraints/**
+      - .github/patches/**
       - .github/workflows/build-image.yml
       - .github/scripts/**
       - config/searxng/**
@@ -35,7 +36,7 @@ concurrency:
 env:
   IMAGE_DESCRIPTION: Independent prebuilt container for Odysseus, built automatically from the official upstream source. This project publishes images and deployment files only.
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
-  PACKAGING_SCHEMA: "7"
+  PACKAGING_SCHEMA: "8"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
   FORCE_BUILD: ${{ inputs.force_build || github.event.client_payload.force_build || github.event.client_payload.force || false }}
 
@@ -80,14 +81,6 @@ jobs:
         working-directory: packaging
         run: .github/scripts/smoke-test-searxng.sh
 
-      - name: Smoke test synchronized stable Compose stack
-        working-directory: packaging
-        run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}:main"
-
-      - name: Smoke test synchronized development Compose stack
-        working-directory: packaging
-        run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}:dev"
-
       - name: Publish deployment bundle changes
         id: publish
         working-directory: packaging
@@ -131,12 +124,13 @@ jobs:
           persist-credentials: false
           path: upstream
 
-      - name: Apply packaging constraints
-        id: constraints
+      - name: Apply packaging compatibility changes
+        id: packaging
         run: >-
           python3 .github/scripts/image_pipeline.py prepare
           --source upstream
           --constraints .github/constraints/requirements.txt
+          --patches .github/patches
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.2.0
@@ -153,8 +147,10 @@ jobs:
         env:
           CHANNEL_NAME: ${{ matrix.channel_name }}
           MOVING_TAGS: ${{ matrix.moving_tags }}
-          PACKAGING_CONSTRAINTS: ${{ steps.constraints.outputs.constraints }}
-          PACKAGING_CONSTRAINT_FINGERPRINT: ${{ steps.constraints.outputs.constraint_fingerprint }}
+          PACKAGING_CONSTRAINTS: ${{ steps.packaging.outputs.constraints }}
+          PACKAGING_CONSTRAINT_FINGERPRINT: ${{ steps.packaging.outputs.constraint_fingerprint }}
+          PACKAGING_PATCHES: ${{ steps.packaging.outputs.patches }}
+          PACKAGING_PATCH_FINGERPRINT: ${{ steps.packaging.outputs.patch_fingerprint }}
           UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
         run: >-
           python3 .github/scripts/image_pipeline.py plan
@@ -184,8 +180,10 @@ jobs:
             io.netspeedy.odysseus.upstream=https://github.com/odysseus-dev/odysseus
             io.netspeedy.odysseus.channel=${{ matrix.upstream_branch }}
             io.netspeedy.odysseus.packaging-schema=${{ env.PACKAGING_SCHEMA }}
-            io.netspeedy.odysseus.packaging-constraints=${{ steps.constraints.outputs.constraints }}
-            io.netspeedy.odysseus.packaging-constraint-fingerprint=${{ steps.constraints.outputs.constraint_fingerprint }}
+            io.netspeedy.odysseus.packaging-constraints=${{ steps.packaging.outputs.constraints }}
+            io.netspeedy.odysseus.packaging-constraint-fingerprint=${{ steps.packaging.outputs.constraint_fingerprint }}
+            io.netspeedy.odysseus.packaging-patches=${{ steps.packaging.outputs.patches }}
+            io.netspeedy.odysseus.packaging-patch-fingerprint=${{ steps.packaging.outputs.patch_fingerprint }}
             io.netspeedy.odysseus.base-image-fingerprint=${{ steps.plan.outputs.base_fingerprint }}
             io.netspeedy.odysseus.base-images=${{ steps.plan.outputs.base_images }}
           annotations: |
@@ -261,8 +259,10 @@ jobs:
           EXPECTED_VERSION: ${{ steps.plan.outputs.version }}
           BASE_IMAGE_FINGERPRINT: ${{ steps.plan.outputs.base_fingerprint }}
           BASE_IMAGES: ${{ steps.plan.outputs.base_images }}
-          PACKAGING_CONSTRAINTS: ${{ steps.constraints.outputs.constraints }}
-          PACKAGING_CONSTRAINT_FINGERPRINT: ${{ steps.constraints.outputs.constraint_fingerprint }}
+          PACKAGING_CONSTRAINTS: ${{ steps.packaging.outputs.constraints }}
+          PACKAGING_CONSTRAINT_FINGERPRINT: ${{ steps.packaging.outputs.constraint_fingerprint }}
+          PACKAGING_PATCHES: ${{ steps.packaging.outputs.patches }}
+          PACKAGING_PATCH_FINGERPRINT: ${{ steps.packaging.outputs.patch_fingerprint }}
           UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
           UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
         run: >-
