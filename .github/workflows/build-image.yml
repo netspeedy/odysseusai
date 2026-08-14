@@ -29,6 +29,7 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
+  PACKAGING_SCHEMA: "2"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
   FORCE_BUILD: ${{ inputs.force || github.event.client_payload.force || false }}
 
@@ -156,6 +157,7 @@ jobs:
 
           branch_revision="$(image_label "${UPSTREAM_BRANCH}" "org.opencontainers.image.revision")"
           branch_version="$(image_label "${UPSTREAM_BRANCH}" "org.opencontainers.image.version")"
+          branch_schema="$(image_label "${UPSTREAM_BRANCH}" "io.netspeedy.odysseus.packaging-schema")"
           latest_revision=""
           if [ "${UPSTREAM_BRANCH}" = "main" ]; then
             latest_revision="$(image_label latest "org.opencontainers.image.revision")"
@@ -164,6 +166,7 @@ jobs:
           {
             echo "branch_revision=${branch_revision}"
             echo "branch_version=${branch_version}"
+            echo "branch_schema=${branch_schema}"
             echo "latest_revision=${latest_revision}"
           } >> "${GITHUB_OUTPUT}"
 
@@ -172,6 +175,7 @@ jobs:
         shell: bash
         env:
           BRANCH_REVISION: ${{ steps.published.outputs.branch_revision }}
+          BRANCH_SCHEMA: ${{ steps.published.outputs.branch_schema }}
           BRANCH_VERSION: ${{ steps.published.outputs.branch_version }}
           LATEST_REVISION: ${{ steps.published.outputs.latest_revision }}
           UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
@@ -189,6 +193,7 @@ jobs:
           action=build
           if [ "${FORCE_BUILD}" != "true" ] \
             && [ "${BRANCH_REVISION}" = "${UPSTREAM_SHA}" ] \
+            && [ "${BRANCH_SCHEMA}" = "${PACKAGING_SCHEMA}" ] \
             && [ "${version_is_calver}" = "true" ] \
             && { [ "${UPSTREAM_BRANCH}" != "main" ] || [ "${LATEST_REVISION}" = "${UPSTREAM_SHA}" ]; }; then
             action=skip
@@ -231,7 +236,7 @@ jobs:
             type=raw,value=latest,enable=${{ matrix.upstream_branch == 'main' }}
           labels: |
             org.opencontainers.image.title=Odysseus AI
-            org.opencontainers.image.description=Prebuilt Odysseus image from odysseus-dev/odysseus.
+            org.opencontainers.image.description=Prebuilt, automatically updated container image for the Odysseus self-hosted AI workspace.
             org.opencontainers.image.source=https://github.com/netspeedy/odysseusai
             org.opencontainers.image.url=https://github.com/odysseus-dev/odysseus
             org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
@@ -241,6 +246,17 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0-or-later
             io.netspeedy.odysseus.upstream=https://github.com/odysseus-dev/odysseus
             io.netspeedy.odysseus.channel=${{ matrix.upstream_branch }}
+            io.netspeedy.odysseus.packaging-schema=${{ env.PACKAGING_SCHEMA }}
+          annotations: |
+            org.opencontainers.image.title=Odysseus AI
+            org.opencontainers.image.description=Prebuilt, automatically updated container image for the Odysseus self-hosted AI workspace.
+            org.opencontainers.image.source=https://github.com/netspeedy/odysseusai
+            org.opencontainers.image.url=https://github.com/odysseus-dev/odysseus
+            org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
+            org.opencontainers.image.revision=${{ steps.upstream.outputs.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
+            org.opencontainers.image.created=${{ steps.upstream.outputs.build_created }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
 
       - name: Build and push image
         if: steps.decision.outputs.action == 'build'
@@ -250,6 +266,7 @@ jobs:
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
+          annotations: ${{ steps.metadata.outputs.annotations }}
           provenance: false
           sbom: false
           cache-from: type=gha,scope=odysseus-${{ matrix.upstream_branch }}
