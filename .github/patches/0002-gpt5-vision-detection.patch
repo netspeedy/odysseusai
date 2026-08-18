@@ -1,0 +1,35 @@
+diff --git a/src/chat_helpers.py b/src/chat_helpers.py
+--- a/src/chat_helpers.py
++++ b/src/chat_helpers.py
+@@ -75,6 +75,8 @@ def is_vision_model(model_name: str) -> bool:
+     drops the image entirely. See issue #124.
+     """
+     m = (model_name or "").lower()
++    if "gpt-5" in m and "codex" not in m:
++        return True
+     if any(kw in m for kw in _VISION_MODEL_KEYWORDS):
+         return True
+     return bool(_VISION_VL_RE.search(m))
+diff --git a/tests/test_vision_model_detection.py b/tests/test_vision_model_detection.py
+--- a/tests/test_vision_model_detection.py
++++ b/tests/test_vision_model_detection.py
+@@ -42,7 +42,18 @@ def test_recognizes_multimodal_families_without_vision_in_name():
+         assert is_vision_model(name), f"{name!r} should be detected as vision-capable"
+ 
+ 
++def test_recognizes_gpt5_chat_models_as_vision_capable():
++    for name in [
++        "gpt-5.4", "gpt-5.5", "gpt-5.5-medium", "gpt-5.5-xhigh",
++        "gpt-5.6-luna", "cx/gpt-5.5", "openai/gpt-5.5",
++    ]:
++        assert is_vision_model(name), f"{name!r} should be detected as vision-capable"
++
++
+ def test_new_keywords_do_not_overmatch_text_models():
+     # The added families must not flag their text-only siblings.
+-    for name in ["gemma2:9b", "gemma:7b", "llama3.3", "mistral-small", "phi-3-mini"]:
++    for name in [
++        "gemma2:9b", "gemma:7b", "llama3.3", "mistral-small", "phi-3-mini",
++        "gpt-5.1-codex",
++    ]:
+         assert not is_vision_model(name), f"{name!r} should not be flagged as vision"

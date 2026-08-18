@@ -18,9 +18,13 @@ fi
 
 docker run --rm --platform linux/amd64 --entrypoint python "${image_ref}" -c '
 from mcp.server import Server
+from src.chat_helpers import is_vision_model
 
 assert callable(getattr(Server, "list_tools", None)), "mcp Server.list_tools is unavailable"
 assert callable(getattr(Server, "call_tool", None)), "mcp Server.call_tool is unavailable"
+assert is_vision_model("gpt-5.5"), "GPT-5 chat models should preserve image attachments"
+assert is_vision_model("cx/gpt-5.5-medium"), "Provider-prefixed GPT-5 chat models should preserve image attachments"
+assert not is_vision_model("gpt-5.1-codex"), "Codex models should not be treated as vision chat models"
 '
 
 docker run \
