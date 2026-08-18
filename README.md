@@ -110,6 +110,8 @@ channel.
 
 Every candidate image must pass image-level compatibility checks and boot with
 the complete Compose package before any channel or immutable tag is published.
+The image gate verifies bundled MCP compatibility and packaging-owned behavior
+such as GPT-5-family chat models preserving image attachments for vision input.
 The full-stack gate verifies Odysseus health, all bundled MCP servers, ChromaDB,
 ntfy, and a real SearXNG query through the Odysseus search API, then rejects
 request-time SearXNG configuration errors from the resulting logs. Scheduled
@@ -138,15 +140,16 @@ This is an independent container packaging project. It is not maintained by,
 affiliated with, or endorsed by the Odysseus project.
 
 Odysseus application code is built directly from
-[`odysseus-dev/odysseus`](https://github.com/odysseus-dev/odysseus). Two narrow
+[`odysseus-dev/odysseus`](https://github.com/odysseus-dev/odysseus). Narrow
 compatibility changes are applied only to the temporary image build context:
-`mcp<2` keeps upstream `main` compatible with its bundled MCP 1.x servers, and
-the internal SearXNG client uses engines verified against the bundled release
-and identifies local requests correctly. Both changes are public, versioned,
-tested, and fingerprinted in the image metadata; they do not alter the upstream
-repository. Application features, bugs, and documentation belong to the
-upstream project. Image publishing and deployment-bundle issues belong in this
-repository.
+`mcp<2` keeps upstream `main` compatible with its bundled MCP 1.x servers, the
+internal SearXNG client uses engines verified against the bundled release and
+identifies local requests correctly, and GPT-5-family chat models are recognized
+as vision-capable so OpenAI-compatible providers keep image attachments in chat
+requests. These changes are public, versioned, tested, and fingerprinted in the
+image metadata; they do not alter the upstream repository. Application
+features, bugs, and documentation belong to the upstream project. Image
+publishing and deployment-bundle issues belong in this repository.
 
 ## License
 
