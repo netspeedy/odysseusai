@@ -94,7 +94,7 @@ services:
   searxng:
     # Automation resolves upstream latest to a readable tag plus immutable
     # digest, then tests this exact image before publishing the bundle.
-    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.8.22-777ba8fa4@sha256:51ef3af3c4655f13c65ac63ec54f0abffbcd94c49e965041aae438d3f9794e55}
+    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.8.22-9fea41204@sha256:11a9b34cdc0b1ec2b991470a2762ecb5a1a531898289fb51dcd015260450729e}
     entrypoint:
       - /bin/sh
       - -c
