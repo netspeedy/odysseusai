@@ -49,18 +49,18 @@ GPU passthrough, host Docker access, host networking and host workspace mounts a
 
 ## Try it
 
-The image records the CalVer tag it was published under and the upstream commit it was built from, so you can check what you're about to run without pulling it:
+The image reports upstream's version, the CalVer build it was published as and the upstream commit it was built from, so you can check what you're about to run without pulling it:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/netspeedy/odysseusai:latest \
-  --format '{{ index .Image.Config.Labels "org.opencontainers.image.version" }} {{ index .Image.Config.Labels "org.opencontainers.image.revision" }}'
+docker buildx imagetools inspect ghcr.io/netspeedy/odysseusai:latest --format \
+  '{{ index .Manifest.Annotations "org.opencontainers.image.version" }} {{ index .Manifest.Annotations "io.netspeedy.odysseus.build" }} {{ index .Manifest.Annotations "org.opencontainers.image.revision" }}'
 ```
 
 ```text
-2026.11.04.1 9d0d3720f4ca181d87bef94da826d730acc6d483
+1.0.3 2026.11.04.5 9d0d3720f4ca181d87bef94da826d730acc6d483
 ```
 
-The `io.netspeedy.odysseus.*` labels go further: upstream's version, the packaging patches and dependency pins applied to that build, their fingerprints, and the digest of the Python base image.
+The same values are image labels once it's pulled, and the `io.netspeedy.odysseus.*` labels go further: the packaging patches and dependency pins applied to that build, their fingerprints, and the digest of the Python base image.
 
 ## Image tags
 
