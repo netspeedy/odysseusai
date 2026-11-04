@@ -401,14 +401,26 @@ def image_version(branch: str, version: str, upstream_sha: str, build: str) -> s
 
 
 def promoted_upstream_tags(
-    image_name: str, branch: str, version: str, upstream_sha: str, action: str
+    image_name: str,
+    branch: str,
+    version: str,
+    upstream_sha: str,
+    action: str,
+    platforms: list[str],
 ) -> tuple[str, str]:
-    """Return the upstream tags a publication promotes, leaving a published pin alone."""
+    """Return the upstream tags a publication promotes.
+
+    A published pin is left alone, as upstream's are, unless it lacks one of
+    the platforms we build. Then it's republished once with all of them, so a
+    pin from before arm64 builds still works on arm64.
+    """
     if action != "build":
         return "", ""
     version_tag, pin_tag = upstream_tags(branch, version, upstream_sha)
-    if pin_tag and inspect_image(f"{image_name}:{pin_tag}") is not None:
-        pin_tag = ""
+    pin_ref = f"{image_name}:{pin_tag}"
+    if pin_tag and inspect_image(pin_ref) is not None:
+        if set(platforms) <= set(index_platforms(inspect_raw_manifest(pin_ref))):
+            pin_tag = ""
     return version_tag, pin_tag
 
 
@@ -531,6 +543,7 @@ def plan(args: argparse.Namespace) -> None:
     packaging_patches = os.environ["PACKAGING_PATCHES"]
     patch_fingerprint = os.environ["PACKAGING_PATCH_FINGERPRINT"]
     force = os.environ.get("FORCE_BUILD", "false").lower() == "true"
+    platforms = [platform.strip() for platform in os.environ["PLATFORMS"].split(",")]
     moving_tags = [tag.strip() for tag in os.environ["MOVING_TAGS"].split(",")]
 
     upstream_sha = command_output(["git", "rev-parse", "HEAD"], cwd=source)
@@ -556,13 +569,13 @@ def plan(args: argparse.Namespace) -> None:
         version = current["labels"]["io.netspeedy.odysseus.build"]
 
     # Upstream's own tags, so a pin on its image works on ours. The pin is set
-    # by the first build of a commit and never moved, as upstream's isn't.
+    # by the first build of a commit that has every platform, then never moved.
     upstream_version = app_version(source)
     if not upstream_version:
         print("::warning::No usable APP_VERSION in upstream src/constants.py; "
               "publishing without upstream's version tags")
     version_tag, pin_tag = promoted_upstream_tags(
-        image_name, branch, upstream_version, upstream_sha, action
+        image_name, branch, upstream_version, upstream_sha, action, platforms
     )
     extra_tags = [tag for tag in (version_tag, pin_tag) if tag]
     reported_version = image_version(branch, upstream_version, upstream_sha, version)

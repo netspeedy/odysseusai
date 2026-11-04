@@ -100,7 +100,9 @@ temporary build context.
   `src/constants.py`; `app_version` and `upstream_tags` in `image_pipeline.py`
   mirror its docker-publish workflow, so change them when upstream changes
   that. The commit pins are immutable upstream, so a pin is promoted only by
-  the first build of its commit. CalVer and `main` are ours, in addition.
+  the first build of its commit that has every platform in `PLATFORMS`; a
+  pin missing one is republished once. CalVer and `main` are ours, in
+  addition.
   The image's `org.opencontainers.image.version` is upstream's number too
   (`X.Y.Z` on main, the dev pin on dev, from `image_version`), and the
   CalVer goes in `io.netspeedy.odysseus.build`, which planning reads to

@@ -440,23 +440,36 @@ class UpstreamTagTests(unittest.TestCase):
     def test_published_pin_is_never_moved(self, sleep):
         del sleep
         image = "ghcr.io/netspeedy/odysseusai"
+        platforms = ["linux/amd64", "linux/arm64"]
+        both = {
+            "manifests": [
+                {"platform": {"os": "linux", "architecture": "amd64"}},
+                {"platform": {"os": "linux", "architecture": "arm64"}},
+            ]
+        }
         with mock.patch.object(image_pipeline.subprocess, "run", return_value=MISSING):
             self.assertEqual(
-                promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build"),
+                promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build", platforms),
                 ("1.0.3", "1.0.3-9d0d372"),
             )
         with mock.patch.object(image_pipeline, "inspect_image", return_value={"labels": {}}):
-            self.assertEqual(
-                promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build"),
-                ("1.0.3", ""),
-            )
+            with mock.patch.object(image_pipeline, "inspect_raw_manifest", return_value=both):
+                self.assertEqual(
+                    promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build", platforms),
+                    ("1.0.3", ""),
+                )
+            # A pin from before arm64 builds is a plain amd64 manifest.
+            with mock.patch.object(image_pipeline, "inspect_raw_manifest", return_value={}):
+                self.assertEqual(
+                    promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build", platforms),
+                    ("1.0.3", "1.0.3-9d0d372"),
+                )
         with mock.patch.object(image_pipeline.subprocess, "run", return_value=OUTAGE):
             with self.assertRaises(RuntimeError):
-                promoted_upstream_tags(image, "dev", "1.0.3", self.SHA, "build")
+                promoted_upstream_tags(image, "dev", "1.0.3", self.SHA, "build", platforms)
         self.assertEqual(
-            promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "skip"), ("", "")
+            promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "skip", platforms), ("", "")
         )
-
 
 if __name__ == "__main__":
     unittest.main()
