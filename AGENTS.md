@@ -56,7 +56,10 @@ temporary build context.
   tags and verifies the published labels. A failed candidate is deleted.
   Planning reads GHCR anonymously and the registry login comes after the
   upstream tests; keep it there, so upstream code never runs next to a
-  registry credential.
+  registry credential. At 05:17 UTC on Sundays both channels are rebuilt
+  without the layer cache (`fresh_build`) and published, because upstream's
+  requirements are mostly unpinned and the cached pip layer would otherwise
+  keep old releases until the base image or requirements change.
 - Dependabot (`.github/dependabot.yml`, daily) covers the Compose images, the
   GitHub Actions and the actionlint image in `scripts/actionlint/Dockerfile`.
 
