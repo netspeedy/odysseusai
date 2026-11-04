@@ -1,12 +1,37 @@
 version: 2
 
+# Everything this repository pins is checked every day, weekends included,
+# through a cron schedule: Dependabot's `daily` interval skips weekends.
+# Upstream doesn't keep its Compose pins current, so the bundle's are ours to
+# maintain; the nightly sync keeps whichever of ours and upstream's is newer.
+# Build and Validate boots the full stack on each pull request, and Automation
+# Auto Merge merges it once that passes.
 updates:
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: cron
+      cronjob: "0 3 * * *"
+      timezone: Europe/London
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: docker
+    directory: /scripts/actionlint
+    schedule:
+      interval: cron
+      cronjob: "10 3 * * *"
+      timezone: Europe/London
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-      day: monday
-      time: "04:00"
+      interval: cron
+      cronjob: "20 3 * * *"
       timezone: Europe/London
     open-pull-requests-limit: 5
     groups:

@@ -2,10 +2,15 @@ PYTHON ?= python3
 HERO := scripts/readme
 CHROME ?= /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 
-.PHONY: test readme-hero social-card
+.PHONY: test actionlint readme-hero social-card
 
 test:
 	$(PYTHON) -m unittest discover -s .github/scripts/tests
+
+# The same pinned actionlint image CI runs.
+actionlint:
+	docker build --quiet --tag odysseusai-actionlint scripts/actionlint >/dev/null
+	docker run --rm --volume "$(CURDIR):/repo" --workdir /repo odysseusai-actionlint -color
 
 # Writes the README hero and the social card SVG.
 readme-hero:
