@@ -21,6 +21,7 @@ from image_pipeline import (  # noqa: E402
     decide_action,
     dockerfile_base_references,
     image_content_digests,
+    image_version,
     inspect_image,
     next_version,
     promoted_upstream_tags,
@@ -32,12 +33,13 @@ from image_pipeline import (  # noqa: E402
 )
 
 
-def image_state(*, digest: str, revision: str, schema: str, base: str, version: str):
+def image_state(*, digest: str, revision: str, schema: str, base: str, build: str):
     """Return a minimal image state for decision tests."""
     return {
         "labels": {
             "org.opencontainers.image.revision": revision,
-            "org.opencontainers.image.version": version,
+            "org.opencontainers.image.version": "1.0.3",
+            "io.netspeedy.odysseus.build": build,
             "io.netspeedy.odysseus.packaging-schema": schema,
             "io.netspeedy.odysseus.packaging-constraint-fingerprint": "sha256:constraints",
             "io.netspeedy.odysseus.packaging-patch-fingerprint": "sha256:patches",
@@ -80,14 +82,14 @@ class DecisionTests(unittest.TestCase):
             revision="abc123",
             schema="5",
             base="sha256:base",
-            version="2026.08.14.1",
+            build="2026.08.14.1",
         )
         self.latest = image_state(
             digest="sha256:current",
             revision="abc123",
             schema="5",
             base="sha256:base",
-            version="2026.08.14.1",
+            build="2026.08.14.1",
         )
 
     def test_unchanged_stable_image_is_skipped(self):
@@ -137,6 +139,26 @@ class DecisionTests(unittest.TestCase):
 
         self.assertEqual(action, "build")
         self.assertIn("Packaging patches changed", reason)
+
+    def test_image_without_a_build_label_is_rebuilt(self):
+        # Images published before the build label carried CalVer as their version.
+        labels = self.current["labels"]
+        labels["org.opencontainers.image.version"] = labels.pop("io.netspeedy.odysseus.build")
+
+        action, reason = decide_action(
+            branch="main",
+            upstream_sha="abc123",
+            packaging_schema="5",
+            constraint_fingerprint="sha256:constraints",
+            patch_fingerprint="sha256:patches",
+            base_fingerprint="sha256:base",
+            current=self.current,
+            latest=self.latest,
+            force=False,
+        )
+
+        self.assertEqual(action, "build")
+        self.assertIn("Published build tag is missing or outdated", reason)
 
     def test_development_version_uses_suffix(self):
         self.assertTrue(valid_version("dev", "2026.08.14.1-dev"))
@@ -249,6 +271,7 @@ class PromotionTests(unittest.TestCase):
             "ghcr.io/netspeedy/odysseusai",
             digest,
             "2026.08.14.1",
+            "1.0.3",
             "abc123",
             "Prebuilt Odysseus image",
             "123.1",
@@ -258,6 +281,8 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(command[:4], ["docker", "buildx", "imagetools", "create"])
         self.assertIn("index:io.netspeedy.odysseus.channel-pointer=stable", command)
         self.assertIn(f"index:io.netspeedy.odysseus.stable-digest={digest}", command)
+        self.assertIn("index:org.opencontainers.image.version=1.0.3", command)
+        self.assertIn("index:io.netspeedy.odysseus.build=2026.08.14.1", command)
         self.assertEqual(
             command[-5:],
             [
@@ -356,6 +381,14 @@ class UpstreamTagTests(unittest.TestCase):
         )
         self.assertEqual(upstream_tags("dev", "1.0.3", self.SHA), ("", "1.0.3-dev.9d0d372"))
         self.assertEqual(upstream_tags("main", "", self.SHA), ("", ""))
+
+    def test_image_reports_upstreams_version(self):
+        self.assertEqual(image_version("main", "1.0.3", self.SHA, "2026.11.04.5"), "1.0.3")
+        self.assertEqual(
+            image_version("dev", "1.0.3", self.SHA, "2026.11.04.5-dev"), "1.0.3-dev.9d0d372"
+        )
+        # Without a usable APP_VERSION there's only our build tag to report.
+        self.assertEqual(image_version("main", "", self.SHA, "2026.11.04.5"), "2026.11.04.5")
 
     @mock.patch.object(image_pipeline.time, "sleep")
     def test_published_pin_is_never_moved(self, sleep):

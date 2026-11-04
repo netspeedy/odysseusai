@@ -45,7 +45,7 @@ concurrency:
 env:
   IMAGE_DESCRIPTION: Independent prebuilt container for Odysseus, built automatically from the official upstream source. This project publishes images and deployment files only.
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
-  PACKAGING_SCHEMA: "9"
+  PACKAGING_SCHEMA: "10"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
   FRESH_BUILD: ${{ inputs.fresh_build || github.event.schedule == '17 5 * * 0' }}
   FORCE_BUILD: ${{ inputs.force_build || inputs.fresh_build || github.event.schedule == '17 5 * * 0' || github.event.client_payload.force_build || github.event.client_payload.force || false }}
@@ -152,10 +152,11 @@ jobs:
             org.opencontainers.image.url=https://odysseus-dev.github.io/odysseus
             org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
             org.opencontainers.image.revision=${{ steps.plan.outputs.upstream_sha }}
-            org.opencontainers.image.version=${{ steps.plan.outputs.version }}
+            org.opencontainers.image.version=${{ steps.plan.outputs.image_version }}
             org.opencontainers.image.created=${{ steps.plan.outputs.build_created }}
             org.opencontainers.image.licenses=AGPL-3.0-or-later
             io.netspeedy.odysseus.upstream=https://github.com/odysseus-dev/odysseus
+            io.netspeedy.odysseus.build=${{ steps.plan.outputs.version }}
             io.netspeedy.odysseus.channel=${{ matrix.upstream_branch }}
             io.netspeedy.odysseus.packaging-schema=${{ env.PACKAGING_SCHEMA }}
             io.netspeedy.odysseus.packaging-constraints=${{ steps.packaging.outputs.constraints }}
@@ -172,9 +173,10 @@ jobs:
             org.opencontainers.image.url=https://odysseus-dev.github.io/odysseus
             org.opencontainers.image.documentation=https://github.com/netspeedy/odysseusai#readme
             org.opencontainers.image.revision=${{ steps.plan.outputs.upstream_sha }}
-            org.opencontainers.image.version=${{ steps.plan.outputs.version }}
+            org.opencontainers.image.version=${{ steps.plan.outputs.image_version }}
             org.opencontainers.image.created=${{ steps.plan.outputs.build_created }}
             org.opencontainers.image.licenses=AGPL-3.0-or-later
+            io.netspeedy.odysseus.build=${{ steps.plan.outputs.version }}
 
       - name: Build candidate image
         if: steps.plan.outputs.action == 'build'
@@ -239,6 +241,7 @@ jobs:
       - name: Verify published image
         env:
           EXPECTED_VERSION: ${{ steps.plan.outputs.version }}
+          EXPECTED_IMAGE_VERSION: ${{ steps.plan.outputs.image_version }}
           BASE_IMAGE_FINGERPRINT: ${{ steps.plan.outputs.base_fingerprint }}
           BASE_IMAGES: ${{ steps.plan.outputs.base_images }}
           PACKAGING_CONSTRAINTS: ${{ steps.packaging.outputs.constraints }}
