@@ -12,9 +12,9 @@ as a course, from upstream main through the patch, image smoke test and Compose 
 GHCR. A comet runs the course and lights each waypoint, then the destination flares amber and
 the promoted tags appear above it.
 
-The same copy and chart also make assets/odysseusai-social-card.svg, the repository's 1280x640
-social preview. GitHub only takes an uploaded image for that, so `make social-card` renders the
-PNG beside it, which is uploaded by hand in the repository settings.
+The same copy and chart also make assets/odysseusai-social-card.png, the repository's
+1280x640 social preview, rendered with headless Chrome or Chromium (set CHROME if it isn't
+found). GitHub has no API for that image, so it's uploaded by hand in the repository settings.
 
 Edit the copy, layout or timing here and run `make readme-hero` rather than editing the
 generated SVG. The headline is positioned from measured advances (see ADVANCE); if you change
@@ -32,7 +32,11 @@ import base64
 import hashlib
 import io
 import math
+import os
 import random
+import shutil
+import subprocess
+import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -42,7 +46,7 @@ from fontTools.ttLib import TTFont
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "assets" / "odysseusai-readme-hero.svg"
-SOCIAL_OUTPUT = ROOT / "assets" / "odysseusai-social-card.svg"
+SOCIAL_CARD = ROOT / "assets" / "odysseusai-social-card.png"
 # assets.netspeedy.io's Cloudflare zone turns away urllib's default user agent.
 USER_AGENT = "netspeedy-readme-hero"
 
@@ -716,11 +720,19 @@ def build_svg(spec: dict = CARD) -> str:
 
 # Social card: the repository's social preview, 1280x640 as GitHub recommends. The same copy and
 # chart as the hero, laid out for 2:1 and still: it is uploaded as a PNG, so it shows the rest
-# frame, with every waypoint lit and the tags in place.
+# frame, with every waypoint lit and the tags in place. GitHub has no API for it, so the PNG is
+# uploaded by hand under Settings > General > Social preview.
 
 CARD_W, CARD_H = 1280, 640
 CARD_COPY = "translate(16 44) scale(1.3)"
 CARD_SCENE = "translate(52 96)"
+CHROME_CANDIDATES = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "google-chrome",
+    "chromium",
+    "chromium-browser",
+)
 
 
 def build_social_card(spec: dict = CARD) -> str:
@@ -767,19 +779,58 @@ def build_social_card(spec: dict = CARD) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_svg(path: Path, svg: str) -> None:
+def render_png(svg_path: Path, png_path: Path, width: int, height: int) -> None:
+    """Screenshot the card in headless Chrome, which renders the embedded fonts exactly."""
+    chrome = os.environ.get("CHROME") or next(
+        (c for c in CHROME_CANDIDATES if Path(c).exists() or shutil.which(c)), None
+    )
+    if not chrome:
+        raise SystemExit("the social card needs Chrome or Chromium to render; set CHROME")
+    with tempfile.TemporaryDirectory() as profile:
+        subprocess.run(
+            [
+                chrome,
+                "--headless=new",
+                "--disable-gpu",
+                "--hide-scrollbars",
+                f"--user-data-dir={profile}",
+                f"--window-size={width},{height}",
+                f"--screenshot={png_path}",
+                svg_path.resolve().as_uri(),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+
+def finish_svg(name: str, svg: str) -> str:
     svg = svg.replace("__FONT_FACES__", font_faces(svg))
     if "http://" in svg.replace("http://www.w3.org/2000/svg", "") or "https://" in svg:
-        raise SystemExit(f"external reference found in {path.name}")
+        raise SystemExit(f"external reference found in {name}")
     ET.fromstring(svg)  # well-formed, or this raises
+    return svg
+
+
+def write_svg(path: Path, svg: str) -> None:
+    svg = finish_svg(path.name, svg)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(svg, encoding="utf-8")
     print(f"Wrote {path.relative_to(ROOT)} ({len(svg.encode()) / 1024:.1f} KiB)")
 
 
+def write_social_card(path: Path, svg: str) -> None:
+    svg = finish_svg(path.name, svg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        svg_path = Path(tmp) / "card.svg"
+        svg_path.write_text(svg, encoding="utf-8")
+        render_png(svg_path, path, CARD_W, CARD_H)
+    print(f"Wrote {path.relative_to(ROOT)} ({CARD_W}x{CARD_H})")
+
+
 def main() -> None:
     write_svg(OUTPUT, build_svg())
-    write_svg(SOCIAL_OUTPUT, build_social_card())
+    write_social_card(SOCIAL_CARD, build_social_card())
 
 
 if __name__ == "__main__":
