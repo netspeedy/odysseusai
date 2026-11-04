@@ -79,11 +79,38 @@ index 5a2d9a6..22fffd8 100644
      if api_key:
          req_headers["Authorization"] = f"Bearer {api_key}"
      # Transport fallback must not change the user's retrieval constraints.
+diff --git a/tests/test_search_publication_intent.py b/tests/test_search_publication_intent.py
+index b9edc5e..07525b2 100644
+--- a/tests/test_search_publication_intent.py
++++ b/tests/test_search_publication_intent.py
+@@ -82,7 +82,8 @@ def test_provider_keeps_news_date_window_across_empty_fallbacks(monkeypatch):
+     providers.searxng_search_api('AI news today', time_filter='day')
+     assert len(calls) >= 2
+     assert calls[0]['categories'] == 'news'
+-    assert calls[1]['categories'] == 'general'
++    assert all('categories' not in call for call in calls[1:])
++    assert all(call['engines'] == providers._GENERAL_ENGINES for call in calls[1:])
+     assert all(call['time_range'] == 'day' for call in calls)
+ 
+ 
 diff --git a/tests/test_service_search_provider_guards.py b/tests/test_service_search_provider_guards.py
-index d7735ec..0bacbab 100644
+index d7735ec..444acb2 100644
 --- a/tests/test_service_search_provider_guards.py
 +++ b/tests/test_service_search_provider_guards.py
-@@ -190,7 +190,7 @@ def test_service_searxng_latest_release_uses_general_search(monkeypatch, query,
+@@ -84,7 +84,11 @@ def test_temporal_developments_select_news_not_reference_search(monkeypatch, que
+     monkeypatch.setattr(providers, '_get_provider_key', lambda name: '')
+     monkeypatch.setattr(providers.httpx, 'get', get)
+     providers.searxng_search_api(query, time_filter='week')
+-    assert seen[0]['categories'] == category
++    if category == 'general':
++        assert 'categories' not in seen[0]
++        assert seen[0]['engines'] == providers._GENERAL_ENGINES
++    else:
++        assert seen[0]['categories'] == category
+     assert seen[0]['time_range'] == 'week'
+ 
+ 
+@@ -190,7 +194,7 @@ def test_service_searxng_latest_release_uses_general_search(monkeypatch, query,
      )
  
      assert results
