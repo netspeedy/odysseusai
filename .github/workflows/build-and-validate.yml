@@ -1,0 +1,96 @@
+name: Build and Validate
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  # Sync Deployment Bundle dispatches this on its pull request branch, because
+  # pull requests opened with GITHUB_TOKEN don't trigger pull_request runs.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-and-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_IMAGE: docker.io/rhysd/actionlint:1.7.12
+  UPSTREAM_REPOSITORY: odysseus-dev/odysseus
+
+jobs:
+  lint:
+    name: Lint and Unit Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Lint workflows
+        run: docker run --rm --volume "${PWD}:/repo" --workdir /repo "${ACTIONLINT_IMAGE}" -color
+
+      - name: Lint shell scripts
+        run: shellcheck -x .github/scripts/*.sh
+
+      - name: Run pipeline unit tests
+        run: python3 -m unittest discover -s .github/scripts/tests
+
+  patches:
+    name: Packaging Applies to Upstream ${{ matrix.upstream_branch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream_branch:
+          - main
+          - dev
+
+    # Catches upstream drift before the nightly image run does: every patch
+    # and constraint has to apply cleanly to the current upstream branch.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout upstream ${{ matrix.upstream_branch }}
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ matrix.upstream_branch }}
+          fetch-depth: 1
+          path: upstream
+          persist-credentials: false
+
+      - name: Apply packaging compatibility changes
+        run: >-
+          python3 .github/scripts/image_pipeline.py prepare
+          --source upstream
+          --constraints .github/constraints/requirements.txt
+          --patches .github/patches
+
+  bundle:
+    name: Deployment Bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate Compose files
+        run: .github/scripts/validate-bundle.sh
+
+      - name: Smoke test bundled SearXNG
+        run: .github/scripts/smoke-test-searxng.sh
