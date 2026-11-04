@@ -314,8 +314,11 @@ jobs:
           # A fresh build still writes the cache, so nightly builds after it reuse
           # the newly resolved dependencies.
           no-cache: ${{ env.FRESH_BUILD == 'true' }}
-          cache-from: type=gha,scope=odysseus-${{ matrix.channel.branch }}-${{ matrix.platform.arch }}
-          cache-to: type=gha,mode=max,scope=odysseus-${{ matrix.channel.branch }}-${{ matrix.platform.arch }}
+          # One scope per platform, shared by both channels, which build nearly
+          # the same layers. A scope per channel and platform doesn't fit in the
+          # repository's 10 GB, and an eviction mid-build fails the import.
+          cache-from: type=gha,scope=odysseus-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=odysseus-${{ matrix.platform.arch }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Smoke test candidate image
