@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# shellcheck source=SCRIPTDIR/lib/retry.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/retry.sh"
+
 image_ref="${1:?image reference is required}"
 container_name="odysseus-smoke-${GITHUB_RUN_ID:-local}-${RANDOM}"
 logs_file="$(mktemp "${TMPDIR:-/tmp}/odysseus-smoke.XXXXXX")"
@@ -13,7 +16,7 @@ cleanup() {
 trap cleanup EXIT
 
 if ! docker image inspect "${image_ref}" >/dev/null 2>&1; then
-  docker pull --platform linux/amd64 "${image_ref}"
+  retry 4 docker pull --platform linux/amd64 "${image_ref}"
 fi
 
 docker run --rm --platform linux/amd64 --entrypoint python "${image_ref}" -c '

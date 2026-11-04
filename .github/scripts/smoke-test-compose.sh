@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# shellcheck source=SCRIPTDIR/lib/retry.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/retry.sh"
+
 image_ref="${1:?image reference is required}"
 compose_file="${2:-docker-compose.yml}"
 override_file="${3:-.github/compose/smoke-test.yml}"
@@ -48,13 +51,21 @@ esac
 
 mkdir -p "${APP_DATA_DIR}" "${APP_LOGS_DIR}"
 
+# Pull everything once up front, with retries, so one registry blip doesn't
+# fail the gate. The run and up below then reuse what was pulled.
+run_pull="${pull_policy}"
+if [ "${pull_policy}" = "always" ]; then
+  retry 4 "${compose[@]}" pull --quiet
+  run_pull="missing"
+fi
+
 resolved_images="$("${compose[@]}" config --images)"
 if ! grep -Fxq "${image_ref}" <<< "${resolved_images}"; then
   echo "Compose did not resolve the requested Odysseus image: ${image_ref}" >&2
   exit 1
 fi
 
-"${compose[@]}" run --rm --no-deps --pull "${pull_policy}" --user root \
+"${compose[@]}" run --rm --no-deps --pull "${run_pull}" --user root \
   --entrypoint /bin/sh searxng -c '
 cat > /etc/searxng/settings.yml <<"EOF"
 use_default_settings: true
@@ -64,7 +75,7 @@ server:
 EOF
 rm -f /etc/searxng/limiter.toml
 '
-"${compose[@]}" up --detach --pull "${pull_policy}" --no-build
+"${compose[@]}" up --detach --pull "${run_pull}" --no-build
 
 healthy=false
 for _ in $(seq 1 60); do
