@@ -19,7 +19,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ACTIONLINT_IMAGE: docker.io/rhysd/actionlint:1.7.12
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
 
 jobs:
@@ -35,7 +34,7 @@ jobs:
           persist-credentials: false
 
       - name: Lint workflows
-        run: docker run --rm --volume "${PWD}:/repo" --workdir /repo "${ACTIONLINT_IMAGE}" -color
+        run: make actionlint
 
       - name: Lint shell scripts
         run: shellcheck -x .github/scripts/*.sh
@@ -104,3 +103,8 @@ jobs:
 
       - name: Smoke test bundled SearXNG
         run: .github/scripts/smoke-test-searxng.sh
+
+      # Boots the bundle's ChromaDB, SearXNG and ntfy pins with the published
+      # stable image, so a Dependabot or sync bump is tested before it merges.
+      - name: Smoke test Compose stack
+        run: .github/scripts/smoke-test-compose.sh ghcr.io/netspeedy/odysseusai:latest

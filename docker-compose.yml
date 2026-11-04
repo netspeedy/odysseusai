@@ -117,9 +117,10 @@ services:
     restart: unless-stopped
 
   searxng:
-    # Upstream pin, smoke-tested again by netspeedy/odysseusai before the
-    # bundle is published. Override with SEARXNG_IMAGE in .env.
-    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.10.24-ef0ec03da@sha256:7c7cbe509429e82755104b2a95f52085a98633c95d53f44e4e905fa3a59f08c8}
+    # Pinned by tag and digest: odysseus waits on this healthcheck, so a broken
+    # SearXNG release stops the whole app. Dependabot proposes new releases, and
+    # the bundle checks boot the full stack for a real search before one merges.
+    image: docker.io/searxng/searxng:2026.10.24-ef0ec03da@sha256:7c7cbe509429e82755104b2a95f52085a98633c95d53f44e4e905fa3a59f08c8
     entrypoint:
       - /bin/sh
       - -c

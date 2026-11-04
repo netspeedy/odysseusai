@@ -14,7 +14,10 @@ temporary build context.
   main by `.github/scripts/sync-upstream-runtime.sh`. Don't hand-edit those
   files; change the sync script, which owns the packaging overrides. The list
   of synced files lives in `.github/scripts/lib/bundle.sh`, and the automated
-  pull request may only touch those paths.
+  pull request may only touch those paths. The one other writer is Dependabot,
+  which moves the third-party image pins in `docker-compose.yml`;
+  `compose_pins.py` keeps a pin of ours through the sync when it is at least
+  as new as upstream's.
 - Packaging patches are `.github/patches/NNNN-name.patch`, applied in order to
   a fresh upstream checkout. Dependency pins are
   `.github/constraints/requirements.txt`. Both are fingerprinted into the image
@@ -37,7 +40,9 @@ temporary build context.
   run upstream code.
 - Build and Validate (`build-and-validate.yml`): pull requests, pushes to
   main and dispatch. Lints, unit tests, patches against upstream main and dev
-  together with upstream's tests for the patched code, and the bundle checks.
+  together with upstream's tests for the patched code, and the bundle checks,
+  ending with the full Compose stack on the published stable image so pin
+  bumps are booted before they merge.
 - Automation Auto Merge (04:05 UTC, and after Build and Validate) merges
   Dependabot and bundle sync pull requests once Build and Validate has passed
   for the head revision, ahead of the image run. Sync pull requests are
@@ -52,6 +57,8 @@ temporary build context.
   Planning reads GHCR anonymously and the registry login comes after the
   upstream tests; keep it there, so upstream code never runs next to a
   registry credential.
+- Dependabot (`.github/dependabot.yml`, daily) covers the Compose images, the
+  GitHub Actions and the actionlint image in `scripts/actionlint/Dockerfile`.
 
 ## Rules
 
@@ -72,6 +79,12 @@ temporary build context.
   token is read-only. Pin actions to major versions (`@v7`). setup-uv
   publishes no major tags, so it's pinned to its exact release and Dependabot
   moves it.
+- Every version this repository pins must be one Dependabot can move. Don't
+  put an image or tool version where it can't see it, such as a workflow
+  `env:` value or a `docker://` reference; actionlint lives in a Dockerfile
+  for that reason. The exception is the README hero generator's PEP 723
+  pins, which keep rebuilds byte-identical, are shared with the other
+  netspeedy repositories and ship nothing.
 - Use Conventional Commit subjects. Bodies are prose that explain why and how
   the change was checked.
 
@@ -82,7 +95,7 @@ Before handing work back, run what applies:
 ```bash
 make test
 shellcheck -x .github/scripts/*.sh
-actionlint
+make actionlint
 .github/scripts/validate-bundle.sh
 .github/scripts/smoke-test-searxng.sh
 ```
@@ -90,7 +103,8 @@ actionlint
 For a patch change, run `python3 .github/scripts/image_pipeline.py prepare`
 against fresh clones of upstream main and dev, then
 `.github/scripts/test-upstream.sh <clone>` on each. Only the image workflow
-builds images, so the image and Compose smoke tests run after merge.
+builds images, so a new candidate's image and Compose smoke tests run after
+merge. Build and Validate boots the Compose stack with the published image.
 
 ## Documentation sync
 

@@ -4,9 +4,10 @@ set -euo pipefail
 
 upstream_dir="${1:-upstream}"
 target_dir="${2:-.}"
+scripts_dir="$(dirname "${BASH_SOURCE[0]}")"
 
 # shellcheck source=SCRIPTDIR/lib/bundle.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/bundle.sh"
+source "${scripts_dir}/lib/bundle.sh"
 
 for relative_path in "${bundle_files[@]}"; do
   if [ ! -f "${upstream_dir}/${relative_path}" ]; then
@@ -16,30 +17,6 @@ for relative_path in "${bundle_files[@]}"; do
 done
 
 mkdir -p "${target_dir}/config/searxng" "${target_dir}/docker" "${target_dir}/scripts"
-
-if [ -n "${SEARXNG_PINNED_IMAGE:-}" ]; then
-  searxng_image="${SEARXNG_PINNED_IMAGE}"
-else
-  # Follow upstream's own pin. Upstream tests it against this Odysseus release,
-  # and the sync never has to pull a moving tag to resolve one.
-  searxng_image="$(
-    awk '
-      /^  searxng:$/ { in_searxng = 1; next }
-      in_searxng && /^  [[:alnum:]_.-]+:$/ { exit }
-      in_searxng && /^    image: / { sub(/^    image: /, ""); print; exit }
-    ' "${upstream_dir}/docker-compose.yml"
-  )"
-fi
-
-case "${searxng_image}" in
-  docker.io/searxng/searxng:*@sha256:*) ;;
-  *)
-    echo "SearXNG image must use a readable tag and immutable digest: ${searxng_image}" >&2
-    exit 1
-    ;;
-esac
-
-echo "Using SearXNG image ${searxng_image}"
 
 cp "${upstream_dir}/LICENSE" "${target_dir}/LICENSE"
 cp "${upstream_dir}/docker/gpu.amd.yml" "${target_dir}/docker/gpu.amd.yml"
@@ -91,7 +68,7 @@ awk '
 
 mv "${settings_tmp}" "${target_dir}/config/searxng/settings.yml"
 
-awk -v searxng_image="${searxng_image}" '
+awk '
   function print_odysseus_image() {
     print "    # Prebuilt by netspeedy/odysseusai from upstream Odysseus and smoke-tested"
     print "    # with this Compose file before it is tagged. Choose a channel or pin a"
@@ -170,9 +147,10 @@ awk -v searxng_image="${searxng_image}" '
   }
 
   in_searxng && /^    image: (docker\.io\/)?searxng\/searxng:/ {
-    print "    # Upstream pin, smoke-tested again by netspeedy/odysseusai before the"
-    print "    # bundle is published. Override with SEARXNG_IMAGE in .env."
-    print "    image: ${SEARXNG_IMAGE:-" searxng_image "}"
+    print "    # Pinned by tag and digest: odysseus waits on this healthcheck, so a broken"
+    print "    # SearXNG release stops the whole app. Dependabot proposes new releases, and"
+    print "    # the bundle checks boot the full stack for a real search before one merges."
+    print
     searxng_image_replacements++
     next
   }
@@ -227,6 +205,13 @@ awk -v searxng_image="${searxng_image}" '
     }
   }
 ' "${upstream_dir}/docker-compose.yml" > "${compose_tmp}"
+
+# Upstream doesn't keep its Compose pins current and Dependabot keeps ours, so
+# a pin of ours that is at least as new as upstream's survives the sync.
+if [ -f "${target_dir}/docker-compose.yml" ]; then
+  python3 "${scripts_dir}/compose_pins.py" \
+    --previous "${target_dir}/docker-compose.yml" --generated "${compose_tmp}"
+fi
 
 mv "${compose_tmp}" "${target_dir}/docker-compose.yml"
 
