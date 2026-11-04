@@ -1,21 +1,29 @@
 """Tests for the Odysseus image pipeline helper."""
 
+from datetime import datetime, timezone
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIR))
 
+import image_pipeline  # noqa: E402
 from image_pipeline import (  # noqa: E402
+    REGISTRY_ATTEMPTS,
     apply_constraints,
     apply_patches,
     decide_action,
     dockerfile_base_references,
     image_content_digests,
+    inspect_image,
+    next_version,
     promotion_command,
+    registry_output,
     stable_channel_command,
     valid_version,
 )
@@ -257,6 +265,57 @@ class PromotionTests(unittest.TestCase):
                 f"ghcr.io/netspeedy/odysseusai@{digest}",
             ],
         )
+
+
+def completed(returncode: int, stdout: str = "", stderr: str = ""):
+    """Return a finished process result for registry command tests."""
+    return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
+
+
+MISSING = completed(1, stderr="ERROR: ghcr.io/netspeedy/odysseusai:2026.11.04.1: not found")
+OUTAGE = completed(
+    1,
+    stderr='ERROR: failed to do request: Head "https://ghcr.io/v2/": dial tcp: i/o timeout',
+)
+
+
+@mock.patch.object(image_pipeline.time, "sleep")
+class RegistryTests(unittest.TestCase):
+    def test_missing_reference_is_reported_without_retrying(self, sleep):
+        with mock.patch.object(image_pipeline.subprocess, "run", return_value=MISSING) as run:
+            self.assertIsNone(inspect_image("ghcr.io/netspeedy/odysseusai:2026.11.04.1"))
+        run.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_registry_outage_is_retried_then_raised(self, sleep):
+        with mock.patch.object(image_pipeline.subprocess, "run", return_value=OUTAGE) as run:
+            with self.assertRaises(RuntimeError):
+                inspect_image("ghcr.io/netspeedy/odysseusai:main")
+        self.assertEqual(run.call_count, REGISTRY_ATTEMPTS)
+        self.assertEqual(sleep.call_count, REGISTRY_ATTEMPTS - 1)
+
+    def test_transient_failure_recovers_on_retry(self, sleep):
+        results = [OUTAGE, completed(0, stdout="sha256:" + "a" * 64)]
+        with mock.patch.object(image_pipeline.subprocess, "run", side_effect=results):
+            self.assertEqual(registry_output(["docker", "buildx"]), "sha256:" + "a" * 64)
+        sleep.assert_called_once()
+
+    def test_missing_reference_is_an_error_unless_allowed(self, sleep):
+        del sleep
+        with mock.patch.object(image_pipeline.subprocess, "run", return_value=MISSING):
+            with self.assertRaises(RuntimeError):
+                registry_output(["docker", "buildx", "imagetools", "inspect", "x", "--raw"])
+
+    def test_next_version_never_reuses_a_tag_because_of_an_outage(self, sleep):
+        del sleep
+        now = datetime(2026, 11, 4, 12, tzinfo=timezone.utc)
+        with mock.patch.object(image_pipeline.subprocess, "run", return_value=OUTAGE):
+            with self.assertRaises(RuntimeError):
+                next_version("ghcr.io/netspeedy/odysseusai", "main", now)
+        with mock.patch.object(image_pipeline.subprocess, "run", return_value=MISSING):
+            self.assertEqual(
+                next_version("ghcr.io/netspeedy/odysseusai", "main", now), "2026.11.04.1"
+            )
 
 
 if __name__ == "__main__":
