@@ -57,7 +57,7 @@ docker buildx imagetools inspect ghcr.io/netspeedy/odysseusai:latest --format \
 ```
 
 ```text
-1.0.3 2026.11.04.5 9d0d3720f4ca181d87bef94da826d730acc6d483
+1.0.3 2026.11.04.67 9d0d3720f4ca181d87bef94da826d730acc6d483
 ```
 
 The same values are image labels once it's pulled, and the `io.netspeedy.odysseus.*` labels go further: the packaging patches and dependency pins applied to that build, their fingerprints, and the digest of the Python base image.
