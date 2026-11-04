@@ -6,7 +6,7 @@
   <a href="https://github.com/netspeedy/odysseusai/actions/workflows/build-image.yml"><img src="https://img.shields.io/github/actions/workflow/status/netspeedy/odysseusai/build-image.yml?branch=main&style=flat-square&label=images" alt="Image pipeline"></a>
   <a href="https://github.com/netspeedy/odysseusai/actions/workflows/build-and-validate.yml"><img src="https://img.shields.io/github/actions/workflow/status/netspeedy/odysseusai/build-and-validate.yml?branch=main&style=flat-square&label=validate" alt="Build and Validate"></a>
   <a href="https://github.com/netspeedy/odysseusai/pkgs/container/odysseusai"><img src="https://img.shields.io/badge/GHCR-netspeedy%2Fodysseusai-2496ED?style=flat-square&logo=docker&logoColor=white" alt="GHCR"></a>
-  <a href="#image-tags"><img src="https://img.shields.io/badge/platform-linux%2Famd64-4C58D0?style=flat-square" alt="Platform"></a>
+  <a href="#image-tags"><img src="https://img.shields.io/badge/platform-linux%2Famd64%20%7C%20linux%2Farm64-4C58D0?style=flat-square" alt="Platform"></a>
   <a href="https://github.com/odysseus-dev/odysseus"><img src="https://img.shields.io/badge/upstream-odysseus--dev%2Fodysseus-6E7781?style=flat-square&logo=github" alt="Upstream"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--or--later-2EA043.svg?style=flat-square" alt="License"></a>
 </p>
@@ -76,7 +76,7 @@ The same values are image labels once it's pulled, and the `io.netspeedy.odysseu
 
 The `X.Y.Z` tags are the ones upstream puts on its own image, built from its `APP_VERSION` and the first seven characters of the commit. Switching from upstream means changing the image name and nothing else: `ghcr.io/odysseus-dev/odysseus:1.0.3` becomes `ghcr.io/netspeedy/odysseusai:1.0.3`, which is upstream's 1.0.3 with the [packaging fixes](#what-the-packaging-changes) applied. The image reports upstream's number as its version too, `1.0.3` on stable and the `X.Y.Z-dev.<sha>` pin on dev, and keeps its CalVer tag in the `io.netspeedy.odysseus.build` label.
 
-We rebuild the same commit when its base image or packaging changes and once a week for dependency updates, so the commit pin keeps upstream's meaning and stays on the first build, while `X.Y.Z`, the channel tags and CalVer move on. A commit only gets a pin here if we built it. The pipeline checks upstream once a day and upstream publishes `dev` several times a day, so most of its development pins have no counterpart here. Stable releases are far less frequent, so those almost always do. For CalVer tags, the date is the UTC day the image was published, and `N` counts up from 1 when more than one image goes out that day. To follow `dev`, a release or a pin, set `ODYSSEUS_IMAGE_TAG` in `.env`. Upstream's images are multi-arch; these are `linux/amd64` only for now, so the matching tags don't help on arm64 yet.
+We rebuild the same commit when its base image or packaging changes and once a week for dependency updates, so the commit pin keeps upstream's meaning and stays on the first build, while `X.Y.Z`, the channel tags and CalVer move on. The one exception is a pin published before these images had arm64. The next build of that commit republishes it once with both platforms. A commit only gets a pin here if we built it. The pipeline checks upstream once a day and upstream publishes `dev` several times a day, so most of its development pins have no counterpart here. Stable releases are far less frequent, so those almost always do. For CalVer tags, the date is the UTC day the image was published, and `N` counts up from 1 when more than one image goes out that day. To follow `dev`, a release or a pin, set `ODYSSEUS_IMAGE_TAG` in `.env`. Like upstream's, every image published from November 2026 on is a `linux/amd64` and `linux/arm64` index, so Docker pulls the right one for the host. Older CalVer tags are amd64 only.
 
 ## Updating
 
@@ -110,7 +110,7 @@ flowchart LR
   validate -->|passed| merge[Automation Auto Merge<br/>04:05]
   merge --> images
   up --> images[Odysseus Container Pipeline<br/>04:17]
-  images --> gates{Upstream tests, image smoke test<br/>then full stack and search}
+  images --> gates{Upstream tests, then image smoke test,<br/>full stack and search on amd64 and arm64}
   gates -->|passed| tags[latest, main, dev, upstream's<br/>version tags and a CalVer tag]
   gates -->|failed| drop[Candidate deleted]
 ```
@@ -119,7 +119,7 @@ Sync Deployment Bundle applies the packaging overrides to upstream's Compose fil
 
 Dependabot checks every pin this repository owns each day: the SearXNG, ChromaDB and ntfy images in the Compose file, the GitHub Actions the workflows use, and the actionlint image in `scripts/actionlint/`. Its pull requests go through Build and Validate and Automation Auto Merge like the sync's. Upstream's Compose pins aren't kept current, so when the sync regenerates `docker-compose.yml` it keeps any of our pins that is newer than upstream's, and takes upstream's when that is newer.
 
-Odysseus Container Pipeline starts each channel that needs a build by running upstream's tests for the patched code, the test files a patch edits or that import a module it edits. It then builds a candidate, pushes it by digest only, and runs it through the image and Compose gates. A candidate that fails is deleted, and nothing moves. One that passes is promoted to its channel, upstream and CalVer tags, and the published labels are verified against what was built. Upstream's `requirements.txt` is mostly unpinned names, so the Python dependencies in the image are whatever pip resolved when that layer was built. Every Sunday at 05:17 both channels are rebuilt without the layer cache and published under new CalVer tags, so new dependency releases reach the image within a week even when upstream hasn't changed.
+Odysseus Container Pipeline starts each channel that needs a build by running upstream's tests for the patched code, the test files a patch edits or that import a module it edits, in a job with no registry credential. It then builds a candidate for each platform on a runner of that architecture, pushes it by digest only, and runs it through the image and Compose gates there, so the arm64 image is booted for real rather than under emulation. If either platform fails, its candidates are deleted and nothing moves. When both pass, they're promoted together as one index to the channel, upstream and CalVer tags, and the published labels and platforms are verified against what was built. Upstream's `requirements.txt` is mostly unpinned names, so the Python dependencies in the image are whatever pip resolved when that layer was built. Every Sunday at 05:17 both channels are rebuilt without the layer cache and published under new CalVer tags, so new dependency releases reach the image within a week even when upstream hasn't changed.
 
 ## Development
 

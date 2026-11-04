@@ -45,30 +45,32 @@ concurrency:
 env:
   IMAGE_DESCRIPTION: Independent prebuilt container for Odysseus, built automatically from the official upstream source. This project publishes images and deployment files only.
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
-  PACKAGING_SCHEMA: "10"
+  # Upstream publishes these two, and each one is built and tested on a runner
+  # of its own architecture. The build matrix below lists the same platforms.
+  PLATFORMS: linux/amd64,linux/arm64
+  PACKAGING_SCHEMA: "11"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
   FRESH_BUILD: ${{ inputs.fresh_build || github.event.schedule == '17 5 * * 0' }}
   FORCE_BUILD: ${{ inputs.force_build || inputs.fresh_build || github.event.schedule == '17 5 * * 0' || github.event.client_payload.force_build || github.event.client_payload.force || false }}
 
 jobs:
-  publish:
-    name: ${{ matrix.job_name }}
+  plan:
+    name: Plan ${{ matrix.channel_name }} Image
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 30
+    # Upstream's tests run here, so this job gets no registry credential at
+    # all. Planning reads the package anonymously.
     permissions:
       contents: read
-      packages: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - upstream_branch: main
             channel_name: Stable
-            job_name: Publish Stable Image
             moving_tags: latest, main
           - upstream_branch: dev
             channel_name: Development
-            job_name: Publish Development Image
             moving_tags: dev
 
     steps:
@@ -97,9 +99,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      # The package is public, so planning reads the registry anonymously. The
-      # login comes after upstream's tests, so upstream code never runs next to
-      # a registry credential.
       - name: Plan image publication
         id: plan
         env:
@@ -115,6 +114,25 @@ jobs:
           --source upstream
           --result build-results/${{ matrix.upstream_branch }}.json
 
+      # Uploaded before upstream's tests run, so test code can't edit what the
+      # later jobs trust.
+      - name: Upload channel plan
+        uses: actions/upload-artifact@v7
+        with:
+          name: plan-${{ matrix.upstream_branch }}
+          path: build-results/${{ matrix.upstream_branch }}.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload channel result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-result-${{ matrix.upstream_branch }}
+          path: build-results/${{ matrix.upstream_branch }}.json
+          if-no-files-found: ignore
+          retention-days: 1
+
       # Upstream code runs in this environment, so nothing it touches is cached.
       - name: Set up uv
         if: steps.plan.outputs.action == 'build'
@@ -126,7 +144,115 @@ jobs:
         if: steps.plan.outputs.action == 'build'
         run: .github/scripts/test-upstream.sh upstream
 
+      # The build legs start only from a channel that has this.
+      - name: Record passing upstream tests
+        env:
+          UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+        run: |
+          mkdir -p tested
+          printf '%s\n' "${UPSTREAM_SHA}" > "tested/${UPSTREAM_BRANCH}"
+
+      - name: Upload passing upstream tests
+        uses: actions/upload-artifact@v7
+        with:
+          name: tested-${{ matrix.upstream_branch }}
+          path: tested/${{ matrix.upstream_branch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build ${{ matrix.channel.name }} Image (${{ matrix.platform.arch }})
+    needs: plan
+    # Each leg needs only its own channel's plan, so a failed development plan
+    # doesn't stop the stable legs. A leg whose channel didn't pass upstream's
+    # tests fails at the download.
+    if: ${{ !cancelled() }}
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # The Compose smoke override runs the Odysseus service on this platform.
+      ODYSSEUS_TEST_PLATFORM: ${{ matrix.platform.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        channel:
+          - branch: main
+            name: Stable
+          - branch: dev
+            name: Development
+        platform:
+          - name: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - name: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout pipeline source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download channel plan
+        uses: actions/download-artifact@v8
+        with:
+          name: plan-${{ matrix.channel.branch }}
+          path: build-results
+
+      - name: Check upstream tests passed
+        uses: actions/download-artifact@v8
+        with:
+          name: tested-${{ matrix.channel.branch }}
+          path: tested
+
+      - name: Load channel plan
+        id: plan
+        run: >-
+          python3 .github/scripts/image_pipeline.py load-plan
+          --result build-results/${{ matrix.channel.branch }}.json
+
+      # The planned commit rather than the branch, so every platform builds what
+      # the plan tested even if upstream pushes in the meantime.
+      - name: Checkout upstream source
+        if: steps.plan.outputs.action == 'build'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ steps.plan.outputs.upstream_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: upstream
+
+      - name: Apply packaging compatibility changes
+        if: steps.plan.outputs.action == 'build'
+        id: packaging
+        run: >-
+          python3 .github/scripts/image_pipeline.py prepare
+          --source upstream
+          --constraints .github/constraints/requirements.txt
+          --patches .github/patches
+
+      - name: Check packaging matches the plan
+        if: steps.plan.outputs.action == 'build'
+        env:
+          PLANNED: ${{ steps.plan.outputs.packaging_constraint_fingerprint }} ${{ steps.plan.outputs.packaging_patch_fingerprint }}
+          PREPARED: ${{ steps.packaging.outputs.constraint_fingerprint }} ${{ steps.packaging.outputs.patch_fingerprint }}
+        run: |
+          if [ "${PLANNED}" != "${PREPARED}" ]; then
+            echo "::error::Packaging fingerprints ${PREPARED} differ from the plan's ${PLANNED}"
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
       - name: Log in to GitHub Container Registry
+        if: steps.plan.outputs.action == 'build'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -139,12 +265,6 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ matrix.upstream_branch }}
-            type=raw,value=${{ steps.plan.outputs.version }}
-            type=raw,value=latest,enable=${{ matrix.upstream_branch == 'main' }}
-            type=raw,value=${{ steps.plan.outputs.upstream_version_tag }},enable=${{ steps.plan.outputs.upstream_version_tag != '' }}
-            type=raw,value=${{ steps.plan.outputs.upstream_pin }},enable=${{ steps.plan.outputs.upstream_pin != '' }}
           labels: |
             org.opencontainers.image.title=Odysseus AI
             org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
@@ -157,12 +277,12 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0-or-later
             io.netspeedy.odysseus.upstream=https://github.com/odysseus-dev/odysseus
             io.netspeedy.odysseus.build=${{ steps.plan.outputs.version }}
-            io.netspeedy.odysseus.channel=${{ matrix.upstream_branch }}
+            io.netspeedy.odysseus.channel=${{ matrix.channel.branch }}
             io.netspeedy.odysseus.packaging-schema=${{ env.PACKAGING_SCHEMA }}
-            io.netspeedy.odysseus.packaging-constraints=${{ steps.packaging.outputs.constraints }}
-            io.netspeedy.odysseus.packaging-constraint-fingerprint=${{ steps.packaging.outputs.constraint_fingerprint }}
-            io.netspeedy.odysseus.packaging-patches=${{ steps.packaging.outputs.patches }}
-            io.netspeedy.odysseus.packaging-patch-fingerprint=${{ steps.packaging.outputs.patch_fingerprint }}
+            io.netspeedy.odysseus.packaging-constraints=${{ steps.plan.outputs.packaging_constraints }}
+            io.netspeedy.odysseus.packaging-constraint-fingerprint=${{ steps.plan.outputs.packaging_constraint_fingerprint }}
+            io.netspeedy.odysseus.packaging-patches=${{ steps.plan.outputs.packaging_patches }}
+            io.netspeedy.odysseus.packaging-patch-fingerprint=${{ steps.plan.outputs.packaging_patch_fingerprint }}
             io.netspeedy.odysseus.base-image-fingerprint=${{ steps.plan.outputs.base_fingerprint }}
             io.netspeedy.odysseus.base-images=${{ steps.plan.outputs.base_images }}
             io.netspeedy.odysseus.upstream-version=${{ steps.plan.outputs.upstream_version }}
@@ -184,7 +304,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: upstream
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform.name }}
           pull: true
           tags: ${{ env.IMAGE_NAME }}
           labels: ${{ steps.metadata.outputs.labels }}
@@ -194,15 +314,19 @@ jobs:
           # A fresh build still writes the cache, so nightly builds after it reuse
           # the newly resolved dependencies.
           no-cache: ${{ env.FRESH_BUILD == 'true' }}
-          cache-from: type=gha,scope=odysseus-${{ matrix.upstream_branch }}
-          cache-to: type=gha,mode=max,scope=odysseus-${{ matrix.upstream_branch }}
+          # One scope per platform, shared by both channels, and only the final
+          # image's layers, which hold the slow apt and pip steps. Caching every
+          # stage of four images filled the repository's 10 GB, and once GitHub
+          # evicts a blob the cache still names, the import fails the build.
+          cache-from: type=gha,scope=odysseus-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=min,scope=odysseus-${{ matrix.platform.arch }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Smoke test candidate image
         if: steps.plan.outputs.action == 'build'
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-        run: .github/scripts/smoke-test-image.sh "${IMAGE_NAME}@${IMAGE_DIGEST}"
+        run: .github/scripts/smoke-test-image.sh "${IMAGE_NAME}@${IMAGE_DIGEST}" "${{ matrix.platform.name }}"
 
       - name: Smoke test candidate Compose stack
         if: steps.plan.outputs.action == 'build'
@@ -212,14 +336,25 @@ jobs:
 
       - name: Smoke test current Compose stack
         if: steps.plan.outputs.action == 'skip'
-        run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}:${{ matrix.upstream_branch }}"
+        run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}:${{ matrix.channel.branch }}"
 
-      - name: Promote tested image
-        if: steps.plan.outputs.action == 'build'
+      # The publish job promotes only when every platform has one of these. It
+      # is empty when the channel was current and only the stack was booted.
+      - name: Record tested candidate
         env:
+          ARCH: ${{ matrix.platform.arch }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-          TAGS: ${{ steps.metadata.outputs.tags }}
-        run: python3 .github/scripts/image_pipeline.py promote
+        run: |
+          mkdir -p candidates
+          printf '%s\n' "${IMAGE_DIGEST}" > "candidates/${ARCH}"
+
+      - name: Upload tested candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-${{ matrix.channel.branch }}-${{ matrix.platform.arch }}
+          path: candidates/${{ matrix.platform.arch }}
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Remove failed candidate image
         if: failure() && steps.build.outputs.digest != ''
@@ -227,6 +362,95 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: python3 .github/scripts/image_pipeline.py cleanup
+
+  publish:
+    name: Publish ${{ matrix.channel_name }} Image
+    needs: build
+    # As with the build legs, each channel publishes on its own legs alone.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - upstream_branch: main
+            channel_name: Stable
+          - upstream_branch: dev
+            channel_name: Development
+
+    steps:
+      - name: Checkout pipeline source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download channel plan
+        uses: actions/download-artifact@v8
+        with:
+          name: plan-${{ matrix.upstream_branch }}
+          path: build-results
+
+      - name: Load channel plan
+        id: plan
+        run: >-
+          python3 .github/scripts/image_pipeline.py load-plan
+          --result build-results/${{ matrix.upstream_branch }}.json
+
+      - name: Download tested candidates
+        uses: actions/download-artifact@v8
+        with:
+          pattern: candidate-${{ matrix.upstream_branch }}-*
+          path: candidates
+          merge-multiple: true
+
+      - name: Check every platform passed
+        id: candidates
+        env:
+          ACTION: ${{ steps.plan.outputs.action }}
+        run: python3 .github/scripts/image_pipeline.py candidates --digests candidates
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image tags
+        if: steps.plan.outputs.action == 'build'
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ matrix.upstream_branch }}
+            type=raw,value=${{ steps.plan.outputs.version }}
+            type=raw,value=latest,enable=${{ matrix.upstream_branch == 'main' }}
+            type=raw,value=${{ steps.plan.outputs.upstream_version_tag }},enable=${{ steps.plan.outputs.upstream_version_tag != '' }}
+            type=raw,value=${{ steps.plan.outputs.upstream_pin }},enable=${{ steps.plan.outputs.upstream_pin != '' }}
+
+      - name: Promote tested images
+        if: steps.plan.outputs.action == 'build'
+        id: promote
+        env:
+          IMAGE_DIGESTS: ${{ steps.candidates.outputs.digests }}
+          TAGS: ${{ steps.metadata.outputs.tags }}
+        run: python3 .github/scripts/image_pipeline.py promote
+
+      # Never after promotion has started: the candidates are then untagged
+      # children of a tagged index, and deleting one breaks every tag on it.
+      - name: Remove untested candidates
+        if: failure() && steps.plan.outputs.action == 'build' && steps.promote.outcome == 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/image_pipeline.py cleanup --digests candidates
 
       - name: Report unchanged image
         if: steps.plan.outputs.action == 'skip'
@@ -244,10 +468,10 @@ jobs:
           EXPECTED_IMAGE_VERSION: ${{ steps.plan.outputs.image_version }}
           BASE_IMAGE_FINGERPRINT: ${{ steps.plan.outputs.base_fingerprint }}
           BASE_IMAGES: ${{ steps.plan.outputs.base_images }}
-          PACKAGING_CONSTRAINTS: ${{ steps.packaging.outputs.constraints }}
-          PACKAGING_CONSTRAINT_FINGERPRINT: ${{ steps.packaging.outputs.constraint_fingerprint }}
-          PACKAGING_PATCHES: ${{ steps.packaging.outputs.patches }}
-          PACKAGING_PATCH_FINGERPRINT: ${{ steps.packaging.outputs.patch_fingerprint }}
+          PACKAGING_CONSTRAINTS: ${{ steps.plan.outputs.packaging_constraints }}
+          PACKAGING_CONSTRAINT_FINGERPRINT: ${{ steps.plan.outputs.packaging_constraint_fingerprint }}
+          PACKAGING_PATCHES: ${{ steps.plan.outputs.packaging_patches }}
+          PACKAGING_PATCH_FINGERPRINT: ${{ steps.plan.outputs.packaging_patch_fingerprint }}
           UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
           UPSTREAM_PIN: ${{ steps.plan.outputs.upstream_pin }}
           UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
@@ -263,7 +487,8 @@ jobs:
         with:
           name: image-result-${{ matrix.upstream_branch }}
           path: build-results/${{ matrix.upstream_branch }}.json
-          if-no-files-found: error
+          if-no-files-found: ignore
+          overwrite: true
           retention-days: 1
 
   publish_stable_channel:

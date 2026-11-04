@@ -6,6 +6,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/retry.sh"
 
 image_ref="${1:?image reference is required}"
+# CI passes each build leg's platform, which is also its runner's own.
+platform="${2:-linux/amd64}"
 container_name="odysseus-smoke-${GITHUB_RUN_ID:-local}-${RANDOM}"
 logs_file="$(mktemp "${TMPDIR:-/tmp}/odysseus-smoke.XXXXXX")"
 
@@ -16,10 +18,10 @@ cleanup() {
 trap cleanup EXIT
 
 if ! docker image inspect "${image_ref}" >/dev/null 2>&1; then
-  retry 4 docker pull --platform linux/amd64 "${image_ref}"
+  retry 4 docker pull --platform "${platform}" "${image_ref}"
 fi
 
-docker run --rm --platform linux/amd64 --entrypoint python "${image_ref}" -c '
+docker run --rm --platform "${platform}" --entrypoint python "${image_ref}" -c '
 from mcp.server import Server
 from src.chat_helpers import is_vision_model
 
@@ -33,7 +35,7 @@ assert not is_vision_model("gpt-5.1-codex"), "Codex models should not be treated
 docker run \
   --detach \
   --name "${container_name}" \
-  --platform linux/amd64 \
+  --platform "${platform}" \
   --env AUTH_ENABLED=false \
   --env ODYSSEUS_ADMIN_PASSWORD=odysseus-smoke-test-password \
   --env ODYSSEUS_STARTUP_WARMUPS=0 \

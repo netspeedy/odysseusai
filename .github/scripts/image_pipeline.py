@@ -401,14 +401,26 @@ def image_version(branch: str, version: str, upstream_sha: str, build: str) -> s
 
 
 def promoted_upstream_tags(
-    image_name: str, branch: str, version: str, upstream_sha: str, action: str
+    image_name: str,
+    branch: str,
+    version: str,
+    upstream_sha: str,
+    action: str,
+    platforms: list[str],
 ) -> tuple[str, str]:
-    """Return the upstream tags a publication promotes, leaving a published pin alone."""
+    """Return the upstream tags a publication promotes.
+
+    A published pin is left alone, as upstream's are, unless it lacks one of
+    the platforms we build. Then it's republished once with all of them, so a
+    pin from before arm64 builds still works on arm64.
+    """
     if action != "build":
         return "", ""
     version_tag, pin_tag = upstream_tags(branch, version, upstream_sha)
-    if pin_tag and inspect_image(f"{image_name}:{pin_tag}") is not None:
-        pin_tag = ""
+    pin_ref = f"{image_name}:{pin_tag}"
+    if pin_tag and inspect_image(pin_ref) is not None:
+        if set(platforms) <= set(index_platforms(inspect_raw_manifest(pin_ref))):
+            pin_tag = ""
     return version_tag, pin_tag
 
 
@@ -531,6 +543,7 @@ def plan(args: argparse.Namespace) -> None:
     packaging_patches = os.environ["PACKAGING_PATCHES"]
     patch_fingerprint = os.environ["PACKAGING_PATCH_FINGERPRINT"]
     force = os.environ.get("FORCE_BUILD", "false").lower() == "true"
+    platforms = [platform.strip() for platform in os.environ["PLATFORMS"].split(",")]
     moving_tags = [tag.strip() for tag in os.environ["MOVING_TAGS"].split(",")]
 
     upstream_sha = command_output(["git", "rev-parse", "HEAD"], cwd=source)
@@ -556,13 +569,13 @@ def plan(args: argparse.Namespace) -> None:
         version = current["labels"]["io.netspeedy.odysseus.build"]
 
     # Upstream's own tags, so a pin on its image works on ours. The pin is set
-    # by the first build of a commit and never moved, as upstream's isn't.
+    # by the first build of a commit that has every platform, then never moved.
     upstream_version = app_version(source)
     if not upstream_version:
         print("::warning::No usable APP_VERSION in upstream src/constants.py; "
               "publishing without upstream's version tags")
     version_tag, pin_tag = promoted_upstream_tags(
-        image_name, branch, upstream_version, upstream_sha, action
+        image_name, branch, upstream_version, upstream_sha, action, platforms
     )
     extra_tags = [tag for tag in (version_tag, pin_tag) if tag]
     reported_version = image_version(branch, upstream_version, upstream_sha, version)
@@ -589,24 +602,36 @@ def plan(args: argparse.Namespace) -> None:
         "upstream_version": upstream_version,
         "version": version,
     }
+    outputs = {
+        "action": action,
+        "base_fingerprint": base_fingerprint,
+        "base_images": base_images_value,
+        "build_created": build_created,
+        "image_version": reported_version,
+        "packaging_constraint_fingerprint": constraint_fingerprint,
+        "packaging_constraints": packaging_constraints,
+        "packaging_patch_fingerprint": patch_fingerprint,
+        "packaging_patches": packaging_patches,
+        "reason": reason,
+        "upstream_pin": pin_tag,
+        "upstream_sha": upstream_sha,
+        "upstream_version": upstream_version,
+        "upstream_version_tag": version_tag,
+        "version": version,
+    }
+    # The build and publish jobs replay these with load-plan.
+    result["outputs"] = outputs
     write_json(result_path, result)
-    github_output(
-        {
-            "action": action,
-            "base_fingerprint": base_fingerprint,
-            "base_images": base_images_value,
-            "build_created": build_created,
-            "image_version": reported_version,
-            "reason": reason,
-            "upstream_pin": pin_tag,
-            "upstream_sha": upstream_sha,
-            "upstream_version": upstream_version,
-            "upstream_version_tag": version_tag,
-            "version": version,
-        }
-    )
+    github_output(outputs)
     tags_note = f" with {', '.join(extra_tags)}" if extra_tags else ""
     print(f"{channel_name}: {action} {reported_version} as {version}{tags_note} ({reason})")
+
+
+def load_plan(args: argparse.Namespace) -> None:
+    """Replay a channel plan's outputs in a later job."""
+    result = json.loads(Path(args.result).read_text(encoding="utf-8"))
+    github_output(result["outputs"])
+    print(f"{result['channel']}: {result['action']} {result['version']}")
 
 
 def require_equal(actual: Any, expected: Any, description: str) -> None:
@@ -642,6 +667,7 @@ def verify(args: argparse.Namespace) -> None:
         )
         if tag
     ]
+    platforms = [platform.strip() for platform in os.environ["PLATFORMS"].split(",")]
     image_ref = f"{image_name}:{branch}"
 
     image = inspect_image(image_ref)
@@ -736,6 +762,11 @@ def verify(args: argparse.Namespace) -> None:
         "Channel content",
     )
     version_digest = version_image["manifest"]["digest"]
+    require_equal(
+        index_platforms(version_manifest),
+        sorted(platforms),
+        "Published platforms",
+    )
 
     for tag in upstream_tags_promoted:
         tag_image = inspect_image(f"{image_name}:{tag}")
@@ -767,36 +798,89 @@ def verify(args: argparse.Namespace) -> None:
     print(f"Verified {image_ref}@{channel_digest} contains {version_digest}")
 
 
-def promotion_command(image_name: str, digest: str, tags: list[str]) -> list[str]:
-    """Return a command that copies one tested manifest to its publication tags."""
-    if not DIGEST_RE.fullmatch(digest):
-        raise RuntimeError(f"Invalid candidate digest: {digest}")
+def index_platforms(raw_manifest: dict[str, Any]) -> list[str]:
+    """Return the sorted os/architecture pairs an image index holds."""
+    platforms = []
+    for descriptor in raw_manifest.get("manifests", []):
+        platform = descriptor.get("platform", {})
+        if platform.get("os", "unknown") != "unknown":
+            platforms.append(f"{platform.get('os')}/{platform.get('architecture')}")
+    return sorted(platforms)
+
+
+def platform_key(platform: str) -> str:
+    """Return the short name a platform's candidate is recorded under."""
+    return platform.split("/", 1)[1].replace("/", "-")
+
+
+def tested_candidates(directory: Path, platforms: list[str], action: str) -> list[str]:
+    """Return each platform's tested digest, or raise if a platform didn't pass.
+
+    Every build leg records a file named for its architecture once its gates
+    pass: the candidate digest, or nothing when the channel was current.
+    """
+    digests = []
+    for platform in platforms:
+        record = directory / platform_key(platform)
+        if not record.is_file():
+            raise RuntimeError(f"The {platform} leg did not pass its gates")
+        digest = record.read_text(encoding="utf-8").strip()
+        if action == "build" and not DIGEST_RE.fullmatch(digest):
+            raise RuntimeError(f"Invalid {platform} candidate digest: {digest!r}")
+        if digest:
+            digests.append(digest)
+    return digests
+
+
+def promotion_command(
+    image_name: str,
+    digests: list[str],
+    tags: list[str],
+    annotations: dict[str, str],
+) -> list[str]:
+    """Return a command that publishes tested manifests as one tagged index."""
+    if not digests:
+        raise RuntimeError("No candidate digests were supplied")
+    if any(not DIGEST_RE.fullmatch(digest) for digest in digests):
+        raise RuntimeError(f"Invalid candidate digest: {digests}")
     if not tags:
         raise RuntimeError("No promotion tags were supplied")
     if any(not tag.startswith(f"{image_name}:") for tag in tags):
         raise RuntimeError(f"Promotion tags must belong to {image_name}: {tags}")
 
-    command = [
-        "docker",
-        "buildx",
-        "imagetools",
-        "create",
-        "--prefer-index=false",
-    ]
+    command = ["docker", "buildx", "imagetools", "create"]
+    # The registry shows the index's annotations, so they carry the
+    # candidates' own manifest annotations up.
+    for key, value in sorted(annotations.items()):
+        command.extend(["--annotation", f"index:{key}={value}"])
     for tag in tags:
         command.extend(["--tag", tag])
-    command.append(f"{image_name}@{digest}")
+    command.extend(f"{image_name}@{digest}" for digest in digests)
     return command
 
 
+def candidates(args: argparse.Namespace) -> None:
+    """Check every platform leg passed and output the digests to promote."""
+    platforms = [platform.strip() for platform in os.environ["PLATFORMS"].split(",")]
+    digests = tested_candidates(Path(args.digests), platforms, os.environ["ACTION"])
+    github_output({"digests": " ".join(digests)})
+    print(f"All {len(platforms)} platform legs passed: {', '.join(platforms)}")
+
+
 def promote(args: argparse.Namespace) -> None:
-    """Promote a tested digest to its channel and immutable tags."""
+    """Promote tested digests to their channel and immutable tags as one index."""
     del args
     image_name = os.environ["IMAGE_NAME"]
-    digest = os.environ["IMAGE_DIGEST"]
+    digests = os.environ["IMAGE_DIGESTS"].split()
     tags = [tag.strip() for tag in os.environ["TAGS"].splitlines() if tag.strip()]
-    registry_output(promotion_command(image_name, digest, tags))
-    print(f"Promoted {image_name}@{digest} to {', '.join(tags)}")
+    annotations = [
+        inspect_raw_manifest(f"{image_name}@{digest}").get("annotations", {})
+        for digest in digests
+    ]
+    if any(candidate != annotations[0] for candidate in annotations):
+        raise RuntimeError("Platform candidates were built with different annotations")
+    registry_output(promotion_command(image_name, digests, tags, annotations[0]))
+    print(f"Promoted {', '.join(digests)} to {', '.join(tags)}")
 
 
 def stable_channel_command(
@@ -1024,15 +1108,25 @@ def delete_untagged_package_version(
 
 
 def cleanup(args: argparse.Namespace) -> None:
-    """Delete an untagged candidate package version after a failed test."""
-    del args
-    delete_untagged_package_version(
-        os.environ["GH_TOKEN"],
-        os.environ["GITHUB_REPOSITORY_OWNER"],
-        os.environ["IMAGE_NAME"],
-        os.environ["IMAGE_DIGEST"],
-        "failed candidate",
-    )
+    """Delete untagged candidates after a failed gate.
+
+    Only run this before promotion: once promoted, each candidate is an
+    untagged child of a tagged index, and deleting it breaks every tag.
+    """
+    if args.digests:
+        directory = Path(args.digests)
+        records = sorted(directory.iterdir()) if directory.is_dir() else []
+        digests = [record.read_text(encoding="utf-8").strip() for record in records]
+    else:
+        digests = [os.environ["IMAGE_DIGEST"]]
+    for digest in filter(None, digests):
+        delete_untagged_package_version(
+            os.environ["GH_TOKEN"],
+            os.environ["GITHUB_REPOSITORY_OWNER"],
+            os.environ["IMAGE_NAME"],
+            digest,
+            "failed candidate",
+        )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1053,6 +1147,18 @@ def parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--result", required=True)
     plan_parser.set_defaults(handler=plan)
 
+    load_plan_parser = commands.add_parser(
+        "load-plan", help="Replay a channel plan's outputs in a later job"
+    )
+    load_plan_parser.add_argument("--result", required=True)
+    load_plan_parser.set_defaults(handler=load_plan)
+
+    candidates_parser = commands.add_parser(
+        "candidates", help="Check every platform leg passed its gates"
+    )
+    candidates_parser.add_argument("--digests", required=True)
+    candidates_parser.set_defaults(handler=candidates)
+
     verify_parser = commands.add_parser("verify", help="Verify a published image")
     verify_parser.add_argument("--result", required=True)
     verify_parser.set_defaults(handler=verify)
@@ -1067,8 +1173,9 @@ def parser() -> argparse.ArgumentParser:
     stable_channel_parser.set_defaults(handler=publish_stable_channel)
 
     cleanup_parser = commands.add_parser(
-        "cleanup", help="Delete a failed untagged candidate digest"
+        "cleanup", help="Delete failed untagged candidate digests"
     )
+    cleanup_parser.add_argument("--digests")
     cleanup_parser.set_defaults(handler=cleanup)
     return cli
 

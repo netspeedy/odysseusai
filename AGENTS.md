@@ -49,17 +49,24 @@ temporary build context.
   rebase-merged so the maintainer stays the commit author; a squash would make
   `github-actions[bot]` the author. Dependabot pull requests are squashed.
 - Odysseus Container Pipeline (`build-image.yml`, 04:17 UTC and on pushes
-  that touch the pipeline): for each channel that needs a build, runs
-  upstream's tests for the patched code with `test-upstream.sh`, builds the
-  candidate, pushes it by digest only, gates it with `smoke-test-image.sh` and
-  `smoke-test-compose.sh`, and only then promotes it to its channel, CalVer and
-  upstream tags and verifies the published labels. A failed candidate is deleted.
-  Planning reads GHCR anonymously and the registry login comes after the
-  upstream tests; keep it there, so upstream code never runs next to a
-  registry credential. At 05:17 UTC on Sundays both channels are rebuilt
-  without the layer cache (`fresh_build`) and published, because upstream's
-  requirements are mostly unpinned and the cached pip layer would otherwise
-  keep old releases until the base image or requirements change.
+  that touch the pipeline): per channel, a plan job reads GHCR anonymously,
+  allocates the CalVer and runs upstream's tests for the patched code with
+  `test-upstream.sh`. It has no registry credential, so upstream code never
+  runs next to one; keep it that way. It uploads the plan before the tests
+  and a `tested-<branch>` marker after them. A build leg per platform
+  (`linux/amd64` on `ubuntu-24.04`, `linux/arm64` on `ubuntu-24.04-arm`)
+  builds the planned commit, pushes it by digest only and gates it natively
+  with `smoke-test-image.sh` and `smoke-test-compose.sh`. The publish job
+  promotes only when every platform passed, as one index to the channel,
+  CalVer and upstream tags, then verifies the labels and platforms. Each
+  channel's legs depend only on that channel's artifacts, so a failed dev
+  build never holds back stable. Failed candidates are deleted, but never
+  once promotion has started: a promoted candidate is an untagged child of a
+  tagged index, and deleting it breaks every tag. At 05:17 UTC on Sundays
+  both channels are rebuilt without the layer cache (`fresh_build`) and
+  published, because upstream's requirements are mostly unpinned and the
+  cached pip layer would otherwise keep old releases until the base image or
+  requirements change.
 - Dependabot (`.github/dependabot.yml`, daily) covers the Compose images, the
   GitHub Actions and the actionlint image in `scripts/actionlint/Dockerfile`.
 
@@ -93,7 +100,9 @@ temporary build context.
   `src/constants.py`; `app_version` and `upstream_tags` in `image_pipeline.py`
   mirror its docker-publish workflow, so change them when upstream changes
   that. The commit pins are immutable upstream, so a pin is promoted only by
-  the first build of its commit. CalVer and `main` are ours, in addition.
+  the first build of its commit that has every platform in `PLATFORMS`; a
+  pin missing one is republished once. CalVer and `main` are ours, in
+  addition.
   The image's `org.opencontainers.image.version` is upstream's number too
   (`X.Y.Z` on main, the dev pin on dev, from `image_version`), and the
   CalVer goes in `io.netspeedy.odysseus.build`, which planning reads to

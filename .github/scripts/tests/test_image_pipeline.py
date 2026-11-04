@@ -22,12 +22,14 @@ from image_pipeline import (  # noqa: E402
     dockerfile_base_references,
     image_content_digests,
     image_version,
+    index_platforms,
     inspect_image,
     next_version,
     promoted_upstream_tags,
     promotion_command,
     registry_output,
     stable_channel_command,
+    tested_candidates,
     upstream_tags,
     valid_version,
 )
@@ -236,16 +238,18 @@ class PatchTests(unittest.TestCase):
 
 
 class PromotionTests(unittest.TestCase):
-    def test_promotion_preserves_the_tested_single_platform_manifest(self):
-        digest = "sha256:" + "a" * 64
+    def test_promotion_publishes_the_tested_manifests_as_one_annotated_index(self):
+        amd64 = "sha256:" + "a" * 64
+        arm64 = "sha256:" + "c" * 64
 
         command = promotion_command(
             "ghcr.io/netspeedy/odysseusai",
-            digest,
+            [amd64, arm64],
             [
                 "ghcr.io/netspeedy/odysseusai:main",
                 "ghcr.io/netspeedy/odysseusai:2026.08.14.1",
             ],
+            {"org.opencontainers.image.version": "1.0.3"},
         )
 
         self.assertEqual(
@@ -255,14 +259,56 @@ class PromotionTests(unittest.TestCase):
                 "buildx",
                 "imagetools",
                 "create",
-                "--prefer-index=false",
+                "--annotation",
+                "index:org.opencontainers.image.version=1.0.3",
                 "--tag",
                 "ghcr.io/netspeedy/odysseusai:main",
                 "--tag",
                 "ghcr.io/netspeedy/odysseusai:2026.08.14.1",
-                f"ghcr.io/netspeedy/odysseusai@{digest}",
+                f"ghcr.io/netspeedy/odysseusai@{amd64}",
+                f"ghcr.io/netspeedy/odysseusai@{arm64}",
             ],
         )
+
+    def test_promotion_refuses_foreign_tags_and_bad_digests(self):
+        digest = "sha256:" + "a" * 64
+        with self.assertRaises(RuntimeError):
+            promotion_command("ghcr.io/netspeedy/odysseusai", [digest], ["ghcr.io/x/y:main"], {})
+        with self.assertRaises(RuntimeError):
+            promotion_command(
+                "ghcr.io/netspeedy/odysseusai", ["sha256:short"], ["ghcr.io/netspeedy/odysseusai:main"], {}
+            )
+
+    def test_every_platform_must_pass_before_promotion(self):
+        platforms = ["linux/amd64", "linux/arm64"]
+        amd64 = "sha256:" + "a" * 64
+        arm64 = "sha256:" + "c" * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "amd64").write_text(f"{amd64}\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "linux/arm64 leg did not pass"):
+                tested_candidates(directory, platforms, "build")
+
+            (directory / "arm64").write_text(f"{arm64}\n", encoding="utf-8")
+            self.assertEqual(tested_candidates(directory, platforms, "build"), [amd64, arm64])
+
+            # A current channel's legs only boot the stack and record nothing.
+            (directory / "amd64").write_text("\n", encoding="utf-8")
+            (directory / "arm64").write_text("\n", encoding="utf-8")
+            self.assertEqual(tested_candidates(directory, platforms, "skip"), [])
+            with self.assertRaisesRegex(RuntimeError, "Invalid linux/amd64 candidate"):
+                tested_candidates(directory, platforms, "build")
+
+    def test_index_platforms_ignore_attestations(self):
+        manifest = {
+            "manifests": [
+                {"platform": {"os": "linux", "architecture": "arm64"}},
+                {"platform": {"os": "unknown", "architecture": "unknown"}},
+                {"platform": {"os": "linux", "architecture": "amd64"}},
+            ]
+        }
+        self.assertEqual(index_platforms(manifest), ["linux/amd64", "linux/arm64"])
+        self.assertEqual(index_platforms({}), [])
 
     def test_stable_channel_is_an_annotated_index_over_the_tested_manifest(self):
         digest = "sha256:" + "b" * 64
@@ -394,23 +440,36 @@ class UpstreamTagTests(unittest.TestCase):
     def test_published_pin_is_never_moved(self, sleep):
         del sleep
         image = "ghcr.io/netspeedy/odysseusai"
+        platforms = ["linux/amd64", "linux/arm64"]
+        both = {
+            "manifests": [
+                {"platform": {"os": "linux", "architecture": "amd64"}},
+                {"platform": {"os": "linux", "architecture": "arm64"}},
+            ]
+        }
         with mock.patch.object(image_pipeline.subprocess, "run", return_value=MISSING):
             self.assertEqual(
-                promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build"),
+                promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build", platforms),
                 ("1.0.3", "1.0.3-9d0d372"),
             )
         with mock.patch.object(image_pipeline, "inspect_image", return_value={"labels": {}}):
-            self.assertEqual(
-                promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build"),
-                ("1.0.3", ""),
-            )
+            with mock.patch.object(image_pipeline, "inspect_raw_manifest", return_value=both):
+                self.assertEqual(
+                    promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build", platforms),
+                    ("1.0.3", ""),
+                )
+            # A pin from before arm64 builds is a plain amd64 manifest.
+            with mock.patch.object(image_pipeline, "inspect_raw_manifest", return_value={}):
+                self.assertEqual(
+                    promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build", platforms),
+                    ("1.0.3", "1.0.3-9d0d372"),
+                )
         with mock.patch.object(image_pipeline.subprocess, "run", return_value=OUTAGE):
             with self.assertRaises(RuntimeError):
-                promoted_upstream_tags(image, "dev", "1.0.3", self.SHA, "build")
+                promoted_upstream_tags(image, "dev", "1.0.3", self.SHA, "build", platforms)
         self.assertEqual(
-            promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "skip"), ("", "")
+            promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "skip", platforms), ("", "")
         )
-
 
 if __name__ == "__main__":
     unittest.main()
