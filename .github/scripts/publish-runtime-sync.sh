@@ -14,6 +14,9 @@ runtime_files=(
   "docker/gpu.amd.yml"
   "docker/gpu.nvidia.yml"
   "docker/host-docker.yml"
+  "docker/host-network.yml"
+  "docker/host-workspace.yml"
+  "scripts/migrate_searxng_settings.py"
 )
 
 echo "upstream_sha=${upstream_sha}" >> "${GITHUB_OUTPUT}"
@@ -29,7 +32,7 @@ fi
 
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git commit -m "chore: sync Odysseus runtime ${upstream_short_sha}" -- "${runtime_files[@]}"
+git commit -m "chore: sync deployment bundle with upstream ${upstream_short_sha}" -- "${runtime_files[@]}"
 git push origin HEAD:main
 
 echo "changed=true" >> "${GITHUB_OUTPUT}"

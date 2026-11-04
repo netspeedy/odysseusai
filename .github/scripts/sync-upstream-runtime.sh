@@ -13,6 +13,9 @@ required_files=(
   "docker/gpu.amd.yml"
   "docker/gpu.nvidia.yml"
   "docker/host-docker.yml"
+  "docker/host-network.yml"
+  "docker/host-workspace.yml"
+  "scripts/migrate_searxng_settings.py"
 )
 
 for relative_path in "${required_files[@]}"; do
@@ -22,35 +25,20 @@ for relative_path in "${required_files[@]}"; do
   fi
 done
 
-mkdir -p "${target_dir}/config/searxng" "${target_dir}/docker"
+mkdir -p "${target_dir}/config/searxng" "${target_dir}/docker" "${target_dir}/scripts"
 
 if [ -n "${SEARXNG_PINNED_IMAGE:-}" ]; then
   searxng_image="${SEARXNG_PINNED_IMAGE}"
 else
-  searxng_source_image="${SEARXNG_SOURCE_IMAGE:-docker.io/searxng/searxng:latest}"
-  docker pull "${searxng_source_image}" >/dev/null
-
-  searxng_version="$(
-    docker image inspect \
-      --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' \
-      "${searxng_source_image}"
+  # Follow upstream's own pin. Upstream tests it against this Odysseus release,
+  # and the sync never has to pull a moving tag to resolve one.
+  searxng_image="$(
+    awk '
+      /^  searxng:$/ { in_searxng = 1; next }
+      in_searxng && /^  [[:alnum:]_.-]+:$/ { exit }
+      in_searxng && /^    image: / { sub(/^    image: /, ""); print; exit }
+    ' "${upstream_dir}/docker-compose.yml"
   )"
-  searxng_repo_digest="$(
-    docker image inspect --format '{{ index .RepoDigests 0 }}' \
-      "${searxng_source_image}"
-  )"
-  searxng_digest="${searxng_repo_digest##*@}"
-
-  if [[ ! "${searxng_version}" =~ ^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}-[0-9a-f]{8,}$ ]]; then
-    echo "Unexpected SearXNG version label: ${searxng_version}" >&2
-    exit 1
-  fi
-  if [[ ! "${searxng_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-    echo "Unexpected SearXNG image digest: ${searxng_digest}" >&2
-    exit 1
-  fi
-
-  searxng_image="docker.io/searxng/searxng:${searxng_version}@${searxng_digest}"
 fi
 
 case "${searxng_image}" in
@@ -67,6 +55,10 @@ cp "${upstream_dir}/LICENSE" "${target_dir}/LICENSE"
 cp "${upstream_dir}/docker/gpu.amd.yml" "${target_dir}/docker/gpu.amd.yml"
 cp "${upstream_dir}/docker/gpu.nvidia.yml" "${target_dir}/docker/gpu.nvidia.yml"
 cp "${upstream_dir}/docker/host-docker.yml" "${target_dir}/docker/host-docker.yml"
+cp "${upstream_dir}/docker/host-network.yml" "${target_dir}/docker/host-network.yml"
+cp "${upstream_dir}/docker/host-workspace.yml" "${target_dir}/docker/host-workspace.yml"
+cp "${upstream_dir}/scripts/migrate_searxng_settings.py" \
+  "${target_dir}/scripts/migrate_searxng_settings.py"
 
 compose_tmp="$(mktemp "${TMPDIR:-/tmp}/odysseus-compose.XXXXXX")"
 env_tmp="$(mktemp "${TMPDIR:-/tmp}/odysseus-env.XXXXXX")"
@@ -110,6 +102,14 @@ awk '
 mv "${settings_tmp}" "${target_dir}/config/searxng/settings.yml"
 
 awk -v searxng_image="${searxng_image}" '
+  function print_odysseus_image() {
+    print "    # Prebuilt by netspeedy/odysseusai from upstream Odysseus and smoke-tested"
+    print "    # with this Compose file before it is tagged. Choose a channel or pin a"
+    print "    # CalVer build with ODYSSEUS_IMAGE_TAG in .env."
+    print "    image: ghcr.io/netspeedy/odysseusai:${ODYSSEUS_IMAGE_TAG:-latest}"
+    odysseus_replacements++
+  }
+
   /^  odysseus:$/ {
     in_odysseus = 1
     print
@@ -118,6 +118,35 @@ awk -v searxng_image="${searxng_image}" '
 
   in_odysseus && /^  [[:alnum:]_.-]+:$/ {
     in_odysseus = 0
+    printf "%s", odysseus_comment
+    odysseus_comment = ""
+  }
+
+  # Service-level comments are held back until the next key. The block above
+  # the upstream image line describes upstream images, so it goes with it.
+  in_odysseus && /^    #/ {
+    odysseus_comment = odysseus_comment $0 "\n"
+    next
+  }
+
+  in_odysseus && /^    image: / {
+    odysseus_comment = ""
+    print_odysseus_image()
+    next
+  }
+
+  in_odysseus && /^    build: \.$/ {
+    printf "%s", odysseus_comment
+    odysseus_comment = ""
+    if (!odysseus_replacements) {
+      print_odysseus_image()
+    }
+    next
+  }
+
+  in_odysseus && odysseus_comment != "" {
+    printf "%s", odysseus_comment
+    odysseus_comment = ""
   }
 
   /^  searxng:$/ {
@@ -128,12 +157,6 @@ awk -v searxng_image="${searxng_image}" '
 
   in_searxng && /^  [[:alnum:]_.-]+:$/ {
     in_searxng = 0
-  }
-
-  in_odysseus && /^    build: \.$/ {
-    print "    image: ghcr.io/netspeedy/odysseusai:${ODYSSEUS_IMAGE_TAG:-latest}"
-    odysseus_replacements++
-    next
   }
 
   in_odysseus && /^      - SEARXNG_INSTANCE=/ {
@@ -157,8 +180,8 @@ awk -v searxng_image="${searxng_image}" '
   }
 
   in_searxng && /^    image: (docker\.io\/)?searxng\/searxng:/ {
-    print "    # Automation resolves upstream latest to a readable tag plus immutable"
-    print "    # digest, then tests this exact image before publishing the bundle."
+    print "    # Upstream pin, smoke-tested again by netspeedy/odysseusai before the"
+    print "    # bundle is published. Override with SEARXNG_IMAGE in .env."
     print "    image: ${SEARXNG_IMAGE:-" searxng_image "}"
     searxng_image_replacements++
     next

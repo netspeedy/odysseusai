@@ -75,7 +75,7 @@ jobs:
 
       - name: Validate deployment bundle
         working-directory: packaging
-        run: docker compose --env-file .env.example config --quiet
+        run: .github/scripts/validate-bundle.sh
 
       - name: Smoke test synchronized SearXNG
         working-directory: packaging
