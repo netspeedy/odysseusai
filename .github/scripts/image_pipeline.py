@@ -390,6 +390,16 @@ def upstream_tags(branch: str, version: str, upstream_sha: str) -> tuple[str, st
     return "", f"{version}-dev.{short_sha}"
 
 
+def image_version(branch: str, version: str, upstream_sha: str, build: str) -> str:
+    """Return the version an image reports: upstream's number, or the build tag.
+
+    Stable reports X.Y.Z and dev its pin, X.Y.Z-dev.<sha7>, since a dev build
+    isn't that release. The CalVer build tag goes in its own label.
+    """
+    version_tag, pin_tag = upstream_tags(branch, version, upstream_sha)
+    return version_tag or pin_tag or build
+
+
 def promoted_upstream_tags(
     image_name: str, branch: str, version: str, upstream_sha: str, action: str
 ) -> tuple[str, str]:
@@ -438,8 +448,8 @@ def decide_action(
         reasons.append("Packaging patches changed")
     if labels.get("io.netspeedy.odysseus.base-image-fingerprint") != base_fingerprint:
         reasons.append("Base image changed")
-    if not valid_version(branch, labels.get("org.opencontainers.image.version", "")):
-        reasons.append("Published version format is outdated")
+    if not valid_version(branch, labels.get("io.netspeedy.odysseus.build", "")):
+        reasons.append("Published build tag is missing or outdated")
 
     if branch == "main":
         current_digest = current.get("manifest", {}).get("digest")
@@ -543,7 +553,7 @@ def plan(args: argparse.Namespace) -> None:
     if action == "build":
         version = next_version(image_name, branch, now)
     else:
-        version = current["labels"]["org.opencontainers.image.version"]
+        version = current["labels"]["io.netspeedy.odysseus.build"]
 
     # Upstream's own tags, so a pin on its image works on ours. The pin is set
     # by the first build of a commit and never moved, as upstream's isn't.
@@ -555,6 +565,7 @@ def plan(args: argparse.Namespace) -> None:
         image_name, branch, upstream_version, upstream_sha, action
     )
     extra_tags = [tag for tag in (version_tag, pin_tag) if tag]
+    reported_version = image_version(branch, upstream_version, upstream_sha, version)
 
     base_images_value = ",".join(base_images)
     build_created = now.isoformat().replace("+00:00", "Z")
@@ -564,6 +575,7 @@ def plan(args: argparse.Namespace) -> None:
         "base_images": base_images,
         "branch": branch,
         "channel": channel_name,
+        "image_version": reported_version,
         "moving_tags": moving_tags,
         "packaging_constraint_fingerprint": constraint_fingerprint,
         "packaging_constraints": packaging_constraints,
@@ -584,6 +596,7 @@ def plan(args: argparse.Namespace) -> None:
             "base_fingerprint": base_fingerprint,
             "base_images": base_images_value,
             "build_created": build_created,
+            "image_version": reported_version,
             "reason": reason,
             "upstream_pin": pin_tag,
             "upstream_sha": upstream_sha,
@@ -593,7 +606,7 @@ def plan(args: argparse.Namespace) -> None:
         }
     )
     tags_note = f" with {', '.join(extra_tags)}" if extra_tags else ""
-    print(f"{channel_name}: {action} {version}{tags_note} ({reason})")
+    print(f"{channel_name}: {action} {reported_version} as {version}{tags_note} ({reason})")
 
 
 def require_equal(actual: Any, expected: Any, description: str) -> None:
@@ -616,6 +629,7 @@ def verify(args: argparse.Namespace) -> None:
     packaging_patches = os.environ["PACKAGING_PATCHES"]
     patch_fingerprint = os.environ["PACKAGING_PATCH_FINGERPRINT"]
     expected_version = os.environ["EXPECTED_VERSION"]
+    expected_image_version = os.environ["EXPECTED_IMAGE_VERSION"]
     base_fingerprint = os.environ["BASE_IMAGE_FINGERPRINT"]
     base_images = os.environ["BASE_IMAGES"]
     upstream_version = os.environ.get("UPSTREAM_VERSION", "")
@@ -660,8 +674,11 @@ def verify(args: argparse.Namespace) -> None:
     )
     require_equal(
         labels.get("org.opencontainers.image.version"),
-        expected_version,
+        expected_image_version,
         "Image version",
+    )
+    require_equal(
+        labels.get("io.netspeedy.odysseus.build"), expected_version, "Build tag"
     )
     require_equal(labels.get("io.netspeedy.odysseus.channel"), branch, "Image channel")
     require_equal(
@@ -786,6 +803,7 @@ def stable_channel_command(
     image_name: str,
     digest: str,
     version: str,
+    reported_version: str,
     revision: str,
     description: str,
     publication: str,
@@ -804,10 +822,11 @@ def stable_channel_command(
         "org.opencontainers.image.url": "https://odysseus-dev.github.io/odysseus",
         "org.opencontainers.image.documentation": "https://github.com/netspeedy/odysseusai#readme",
         "org.opencontainers.image.revision": revision,
-        "org.opencontainers.image.version": version,
+        "org.opencontainers.image.version": reported_version,
         "org.opencontainers.image.created": created,
         "org.opencontainers.image.licenses": "AGPL-3.0-or-later",
         "io.netspeedy.odysseus.upstream": "https://github.com/odysseus-dev/odysseus",
+        "io.netspeedy.odysseus.build": version,
         "io.netspeedy.odysseus.channel": "main",
         "io.netspeedy.odysseus.channel-pointer": "stable",
         "io.netspeedy.odysseus.stable-digest": digest,
@@ -842,6 +861,7 @@ def publish_stable_channel(args: argparse.Namespace) -> None:
     description = os.environ["IMAGE_DESCRIPTION"]
     digest = stable.get("digest", "")
     version = stable.get("version", "")
+    reported_version = stable.get("image_version") or version
     revision = stable.get("upstream_sha", "")
     publication = f"{os.environ['GITHUB_RUN_ID']}.{os.environ['GITHUB_RUN_ATTEMPT']}"
     created = (
@@ -900,6 +920,7 @@ def publish_stable_channel(args: argparse.Namespace) -> None:
             image_name,
             digest,
             version,
+            reported_version,
             revision,
             description,
             publication,

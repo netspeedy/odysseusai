@@ -94,6 +94,10 @@ temporary build context.
   mirror its docker-publish workflow, so change them when upstream changes
   that. The commit pins are immutable upstream, so a pin is promoted only by
   the first build of its commit. CalVer and `main` are ours, in addition.
+  The image's `org.opencontainers.image.version` is upstream's number too
+  (`X.Y.Z` on main, the dev pin on dev, from `image_version`), and the
+  CalVer goes in `io.netspeedy.odysseus.build`, which planning reads to
+  decide whether a channel is current.
 - Use Conventional Commit subjects. Bodies are prose that explain why and how
   the change was checked.
 

@@ -97,9 +97,11 @@ def render(results: list[dict[str, Any]]) -> str:
     for result in results:
         channel = f"{result.get('channel', result.get('branch', 'Image'))} image"
         version = result.get("version", "")
+        reported = result.get("image_version", "")
+        label = f"{reported} ({version})" if reported and reported != version else version
         lines.append(
             f"| {cell(channel)} | {result_label(result, build_result)} | "
-            f"{link(version, package_url) if version else '-'} |"
+            f"{link(label, package_url) if version else '-'} |"
         )
 
     if not results:
