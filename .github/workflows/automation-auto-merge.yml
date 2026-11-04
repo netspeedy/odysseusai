@@ -1,0 +1,249 @@
+name: Automation Auto Merge
+
+on:
+  workflow_dispatch:
+  # Daily, after Sync Deployment Bundle (03:41). Its pull request is validated by
+  # a dispatched Build and Validate run, and runs started with GITHUB_TOKEN don't
+  # fire workflow_run, so this sweep is what merges it.
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_run:
+    workflows:
+      - Build and Validate
+    types:
+      - completed
+
+concurrency:
+  group: automation-auto-merge-${{ github.event.workflow_run.id || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  checks: read
+  contents: write
+  pull-requests: write
+  statuses: read
+
+jobs:
+  merge:
+    name: Review and Merge Automation Pull Requests
+    if: |
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        (
+          github.event.workflow_run.event == 'pull_request' ||
+          github.event.workflow_run.event == 'workflow_dispatch'
+        )
+      ) ||
+      (
+        github.event_name != 'workflow_run' &&
+        github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Identify candidate pull requests
+        id: candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_PULL_REQUESTS: ${{ toJson(github.event.workflow_run.pull_requests) }}
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+
+          if [ "${EVENT_NAME}" = "workflow_run" ]; then
+            prs="$(printf '%s\n' "${WORKFLOW_RUN_PULL_REQUESTS:-[]}" | jq -r '.[].number')"
+            prs="$(printf '%s\n' "${prs}" | sed '/^$/d')"
+            if [ -z "${prs}" ] && [ -n "${WORKFLOW_RUN_HEAD_BRANCH:-}" ]; then
+              prs="$(
+                gh pr list --state open --head "${WORKFLOW_RUN_HEAD_BRANCH}" --json number,baseRefName \
+                  --jq '.[] | select(.baseRefName == "'"${DEFAULT_BRANCH}"'") | .number'
+              )"
+            fi
+          else
+            prs="$(
+              gh pr list --state open --json number,author,baseRefName \
+                --jq '.[] | select(.baseRefName == "'"${DEFAULT_BRANCH}"'" and (.author.login == "dependabot[bot]" or .author.login == "dependabot" or .author.login == "app/dependabot" or .author.login == "app/github-actions" or .author.login == "github-actions" or .author.login == "github-actions[bot]")) | .number'
+            )"
+          fi
+
+          prs="$(printf '%s\n' "${prs}" | sed '/^$/d' | sort -u)"
+          count="$(printf '%s\n' "${prs}" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+          {
+            echo "count=${count}"
+            echo "prs<<EOF"
+            printf '%s\n' "${prs}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Review and merge eligible pull requests
+        if: steps.candidates.outputs.count != '0'
+        env:
+          DEFAULT_GH_TOKEN: ${{ github.token }}
+          AUTOMATION_AUTOMERGE_TOKEN: ${{ secrets.AUTOMATION_AUTOMERGE_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CANDIDATE_PRS: ${{ steps.candidates.outputs.prs }}
+          EVENT_NAME: ${{ github.event_name }}
+          TRIGGERING_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          # The automerge token's merges start push workflows, so a merged bundle
+          # sync goes straight into an image run. GITHUB_TOKEN merges would not.
+          export GH_TOKEN="${AUTOMATION_AUTOMERGE_TOKEN:-${DEFAULT_GH_TOKEN}}"
+
+          # shellcheck disable=SC2016
+          pr_query='
+          query($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) {
+              pullRequest(number: $number) {
+                number
+                title
+                url
+                state
+                isDraft
+                baseRefName
+                headRefOid
+                mergeable
+                mergeStateStatus
+                reviewDecision
+                author {
+                  login
+                }
+              }
+            }
+          }'
+
+          escape_markdown() {
+            printf '%s' "$1" | sed 's/|/\\|/g'
+          }
+
+          latest_successful_run() {
+            local workflow="$1"
+            local head_sha="$2"
+
+            gh run list \
+              --workflow "${workflow}" \
+              --limit 100 \
+              --json databaseId,headSha,event,conclusion,url \
+              --jq '.[] | select((.event == "pull_request" or .event == "workflow_dispatch") and .headSha == "'"${head_sha}"'" and .conclusion == "success") | @base64' \
+              | head -n1
+          }
+
+          {
+            printf '## Automation Auto Merge\n\n'
+            printf '| Pull Request | Result | Details |\n'
+            printf '| --- | --- | --- |\n'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          merged=0
+          skipped=0
+
+          while IFS= read -r pr_number; do
+            [ -n "${pr_number}" ] || continue
+
+            pr_json="$(
+              gh api graphql \
+                -f owner="${GITHUB_REPOSITORY_OWNER}" \
+                -f name="${GITHUB_REPOSITORY#*/}" \
+                -F number="${pr_number}" \
+                -f query="${pr_query}" \
+                --jq '.data.repository.pullRequest'
+            )"
+
+            if [ "${pr_json}" = "null" ]; then
+              skipped=$((skipped + 1))
+              printf '| #%s | skipped | Pull request no longer exists. |\n' "${pr_number}" >> "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+
+            title="$(jq -r '.title' <<<"${pr_json}")"
+            url="$(jq -r '.url' <<<"${pr_json}")"
+            author="$(jq -r '.author.login // ""' <<<"${pr_json}")"
+            state="$(jq -r '.state' <<<"${pr_json}")"
+            draft="$(jq -r '.isDraft' <<<"${pr_json}")"
+            base_ref="$(jq -r '.baseRefName' <<<"${pr_json}")"
+            head_sha="$(jq -r '.headRefOid // ""' <<<"${pr_json}")"
+            mergeable="$(jq -r '.mergeable' <<<"${pr_json}")"
+            merge_state_status="$(jq -r '.mergeStateStatus' <<<"${pr_json}")"
+            review_decision="$(jq -r '.reviewDecision // ""' <<<"${pr_json}")"
+
+            case "${author}" in
+              dependabot\[bot\] | dependabot | app/dependabot)
+                # Dependabot's own commit becomes the squash commit.
+                merge_method=(--squash --subject "${title}" --body "Automatically merged after Build and Validate passed. Original pull request: ${url}")
+                ;;
+              github-actions\[bot\] | github-actions | app/github-actions)
+                # The bundle sync commit is authored as the maintainer. A rebase
+                # keeps it; a squash would make the bot that opened the pull
+                # request its author.
+                merge_method=(--rebase)
+                ;;
+              *)
+                skipped=$((skipped + 1))
+                printf '| [#%s](%s) | skipped | Not an allowed automation pull request. |\n' "${pr_number}" "${url}" >> "${GITHUB_STEP_SUMMARY}"
+                continue
+                ;;
+            esac
+
+            if [ "${state}" != "OPEN" ] || [ "${draft}" != "false" ] || [ "${base_ref}" != "${DEFAULT_BRANCH}" ]; then
+              skipped=$((skipped + 1))
+              printf "| [#%s](%s) | skipped | Not an open, ready pull request against \`%s\`. |\n" "${pr_number}" "${url}" "${DEFAULT_BRANCH}" >> "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+
+            if [ "${mergeable}" = "CONFLICTING" ] || [ "${merge_state_status}" = "DIRTY" ]; then
+              skipped=$((skipped + 1))
+              printf '| [#%s](%s) | skipped | Merge conflicts need manual attention. |\n' "${pr_number}" "${url}" >> "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+
+            if [ -z "${head_sha}" ]; then
+              skipped=$((skipped + 1))
+              printf '| [#%s](%s) | skipped | Could not resolve the current PR head SHA. |\n' "${pr_number}" "${url}" >> "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+
+            if [ "${EVENT_NAME}" = "workflow_run" ]; then
+              if [ "${TRIGGERING_HEAD_SHA:-}" != "${head_sha}" ]; then
+                skipped=$((skipped + 1))
+                printf '| [#%s](%s) | skipped | The successful run was for an older PR head revision. |\n' "${pr_number}" "${url}" >> "${GITHUB_STEP_SUMMARY}"
+                continue
+              fi
+              validation_detail='Build and Validate passed for the current head revision.'
+            else
+              validation_run="$(latest_successful_run "Build and Validate" "${head_sha}")"
+              if [ -z "${validation_run}" ]; then
+                skipped=$((skipped + 1))
+                printf '| [#%s](%s) | skipped | No successful Build and Validate run for the current head revision. |\n' "${pr_number}" "${url}" >> "${GITHUB_STEP_SUMMARY}"
+                continue
+              fi
+              validation_url="$(printf '%s' "${validation_run}" | base64 --decode | jq -r '.url // ""')"
+              validation_detail="Verified against Build and Validate run ${validation_url}."
+            fi
+
+            if [ "${review_decision}" != "APPROVED" ]; then
+              gh pr review "${pr_number}" --approve --body "Approved automatically after Build and Validate passed." || true
+            fi
+
+            if merge_output="$(gh pr merge "${merge_method[@]}" --delete-branch --match-head-commit "${head_sha}" "${pr_number}" 2>&1)"; then
+              merged=$((merged + 1))
+              printf '| [#%s](%s) | merged (%s) | %s |\n' "${pr_number}" "${url}" "${merge_method[0]#--}" "$(escape_markdown "${validation_detail}")" >> "${GITHUB_STEP_SUMMARY}"
+            else
+              skipped=$((skipped + 1))
+              printf '| [#%s](%s) | skipped | %s |\n' "${pr_number}" "${url}" "$(escape_markdown "$(printf '%s' "${merge_output}" | tail -n1)")" >> "${GITHUB_STEP_SUMMARY}"
+            fi
+          done <<< "${CANDIDATE_PRS}"
+
+          printf '\nMerged: %s\n\nSkipped: %s\n' "${merged}" "${skipped}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Report when no candidate pull requests were found
+        if: steps.candidates.outputs.count == '0'
+        run: |
+          printf '## Automation Auto Merge\n\nNo open automation pull requests matched this run.\n' >> "${GITHUB_STEP_SUMMARY}"
