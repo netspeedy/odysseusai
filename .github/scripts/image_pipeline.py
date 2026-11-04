@@ -24,6 +24,11 @@ DEVELOPMENT_VERSION_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.[1-9]\d*-dev$")
 OCI_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
 REQUIREMENT_NAME_RE = re.compile(r"^([A-Za-z0-9_.-]+)")
+# How buildx reports a reference that does not exist, as opposed to a registry
+# or network failure that says nothing about whether it exists.
+MISSING_REFERENCE_RE = re.compile(r": not found$|MANIFEST_UNKNOWN|manifest unknown", re.M)
+REGISTRY_ATTEMPTS = 4
+REGISTRY_RETRY_DELAY = 5.0
 
 
 def command_output(
@@ -43,6 +48,29 @@ def command_output(
     if completed.returncode != 0:
         return ""
     return completed.stdout.strip()
+
+
+def registry_output(args: list[str], *, allow_missing: bool = False) -> str | None:
+    """Run a registry command, retrying transient failures.
+
+    With allow_missing, a reference the registry reports as not found returns
+    None. Any other failure is retried and then raised, so a registry outage
+    is never mistaken for an unpublished tag.
+    """
+    for attempt in range(1, REGISTRY_ATTEMPTS + 1):
+        completed = subprocess.run(args, check=False, capture_output=True, text=True)
+        if completed.returncode == 0:
+            return completed.stdout.strip()
+        message = completed.stderr.strip() or completed.stdout.strip()
+        if allow_missing and MISSING_REFERENCE_RE.search(message):
+            return None
+        if attempt == REGISTRY_ATTEMPTS:
+            raise RuntimeError(
+                f"Command failed after {attempt} attempts ({' '.join(args)}): {message}"
+            )
+        print(f"Registry command failed (attempt {attempt}), retrying: {message}")
+        time.sleep(REGISTRY_RETRY_DELAY * attempt)
+    raise AssertionError("unreachable")
 
 
 def logical_dockerfile_lines(text: str) -> list[str]:
@@ -101,7 +129,7 @@ def dockerfile_base_references(text: str) -> list[str]:
 
 def inspect_image(reference: str) -> dict[str, Any] | None:
     """Return labels and manifest details for an image reference."""
-    labels_raw = command_output(
+    labels_raw = registry_output(
         [
             "docker",
             "buildx",
@@ -111,9 +139,9 @@ def inspect_image(reference: str) -> dict[str, Any] | None:
             "--format",
             "{{json .Image.Config.Labels}}",
         ],
-        check=False,
+        allow_missing=True,
     )
-    if not labels_raw:
+    if labels_raw is None:
         return None
 
     labels = json.loads(labels_raw)
@@ -134,7 +162,7 @@ def inspect_image(reference: str) -> dict[str, Any] | None:
         if repository.rfind(":") > repository.rfind("/"):
             repository = repository[: repository.rfind(":")]
         child_ref = f"{repository}@{candidates[0]['digest']}"
-        labels_raw = command_output(
+        labels_raw = registry_output(
             [
                 "docker",
                 "buildx",
@@ -149,7 +177,7 @@ def inspect_image(reference: str) -> dict[str, Any] | None:
         if not isinstance(labels, dict):
             raise RuntimeError(f"Image labels are unavailable: {reference}")
 
-    manifest_raw = command_output(
+    manifest_raw = registry_output(
         [
             "docker",
             "buildx",
@@ -169,7 +197,7 @@ def inspect_image(reference: str) -> dict[str, Any] | None:
 def inspect_raw_manifest(reference: str) -> dict[str, Any]:
     """Return the raw OCI manifest for an image reference."""
     return json.loads(
-        command_output(
+        registry_output(
             ["docker", "buildx", "imagetools", "inspect", reference, "--raw"]
         )
     )
@@ -217,7 +245,7 @@ def resolve_base_images(dockerfile: Path) -> tuple[list[str], str]:
     references = dockerfile_base_references(dockerfile.read_text(encoding="utf-8"))
     resolved: list[str] = []
     for reference in references:
-        digest = command_output(
+        digest = registry_output(
             [
                 "docker",
                 "buildx",
@@ -660,7 +688,7 @@ def promote(args: argparse.Namespace) -> None:
     image_name = os.environ["IMAGE_NAME"]
     digest = os.environ["IMAGE_DIGEST"]
     tags = [tag.strip() for tag in os.environ["TAGS"].splitlines() if tag.strip()]
-    command_output(promotion_command(image_name, digest, tags))
+    registry_output(promotion_command(image_name, digest, tags))
     print(f"Promoted {image_name}@{digest} to {', '.join(tags)}")
 
 
@@ -773,7 +801,7 @@ def publish_stable_channel(args: argparse.Namespace) -> None:
             == "stable"
         )
 
-    command_output(
+    registry_output(
         stable_channel_command(
             image_name,
             digest,
