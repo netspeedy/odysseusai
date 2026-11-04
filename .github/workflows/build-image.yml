@@ -31,6 +31,11 @@ on:
         required: false
         type: boolean
         default: false
+      upstream_commit:
+        description: Backfill the tags of one older upstream main commit (full SHA)
+        required: false
+        type: string
+        default: ""
   repository_dispatch:
     types:
       - upstream-updated
@@ -51,6 +56,7 @@ env:
   PACKAGING_SCHEMA: "11"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
   FRESH_BUILD: ${{ inputs.fresh_build || github.event.schedule == '17 5 * * 0' }}
+  BACKFILL_COMMIT: ${{ inputs.upstream_commit }}
   FORCE_BUILD: ${{ inputs.force_build || inputs.fresh_build || github.event.schedule == '17 5 * * 0' || github.event.client_payload.force_build || github.event.client_payload.force || false }}
 
 jobs:
@@ -68,10 +74,8 @@ jobs:
         include:
           - upstream_branch: main
             channel_name: Stable
-            moving_tags: latest, main
           - upstream_branch: dev
             channel_name: Development
-            moving_tags: dev
 
     steps:
       - name: Checkout pipeline source
@@ -79,12 +83,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # A backfill checks out its commit, with history to prove it's on main.
       - name: Checkout upstream source
         uses: actions/checkout@v7
         with:
           repository: ${{ env.UPSTREAM_REPOSITORY }}
-          ref: ${{ matrix.upstream_branch }}
-          fetch-depth: 1
+          ref: ${{ (matrix.upstream_branch == 'main' && inputs.upstream_commit) || matrix.upstream_branch }}
+          fetch-depth: ${{ (matrix.upstream_branch == 'main' && inputs.upstream_commit) && '0' || '1' }}
           persist-credentials: false
           path: upstream
 
@@ -103,7 +108,6 @@ jobs:
         id: plan
         env:
           CHANNEL_NAME: ${{ matrix.channel_name }}
-          MOVING_TAGS: ${{ matrix.moving_tags }}
           PACKAGING_CONSTRAINTS: ${{ steps.packaging.outputs.constraints }}
           PACKAGING_CONSTRAINT_FINGERPRINT: ${{ steps.packaging.outputs.constraint_fingerprint }}
           PACKAGING_PATCHES: ${{ steps.packaging.outputs.patches }}
@@ -423,25 +427,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate image tags
-        if: steps.plan.outputs.action == 'build'
-        id: metadata
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ matrix.upstream_branch }}
-            type=raw,value=${{ steps.plan.outputs.version }}
-            type=raw,value=latest,enable=${{ matrix.upstream_branch == 'main' }}
-            type=raw,value=${{ steps.plan.outputs.upstream_version_tag }},enable=${{ steps.plan.outputs.upstream_version_tag != '' }}
-            type=raw,value=${{ steps.plan.outputs.upstream_pin }},enable=${{ steps.plan.outputs.upstream_pin != '' }}
-
       - name: Promote tested images
         if: steps.plan.outputs.action == 'build'
         id: promote
         env:
           IMAGE_DIGESTS: ${{ steps.candidates.outputs.digests }}
-          TAGS: ${{ steps.metadata.outputs.tags }}
+          PUBLISH_TAGS: ${{ steps.plan.outputs.publish_tags }}
         run: python3 .github/scripts/image_pipeline.py promote
 
       # Never after promotion has started: the candidates are then untagged
@@ -453,16 +444,17 @@ jobs:
         run: python3 .github/scripts/image_pipeline.py cleanup --digests candidates
 
       - name: Report unchanged image
-        if: steps.plan.outputs.action == 'skip'
+        if: steps.plan.outputs.action != 'build'
         env:
           CHANNEL_NAME: ${{ matrix.channel_name }}
           PLAN_REASON: ${{ steps.plan.outputs.reason }}
           UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
         run: >-
-          printf '%s image is current at upstream revision %.12s (%s).\n'
+          printf '%s image is unchanged at upstream revision %.12s (%s).\n'
           "${CHANNEL_NAME}" "${UPSTREAM_SHA}" "${PLAN_REASON}"
 
       - name: Verify published image
+        if: steps.plan.outputs.action != 'none'
         env:
           EXPECTED_VERSION: ${{ steps.plan.outputs.version }}
           EXPECTED_IMAGE_VERSION: ${{ steps.plan.outputs.image_version }}
@@ -472,11 +464,11 @@ jobs:
           PACKAGING_CONSTRAINT_FINGERPRINT: ${{ steps.plan.outputs.packaging_constraint_fingerprint }}
           PACKAGING_PATCHES: ${{ steps.plan.outputs.packaging_patches }}
           PACKAGING_PATCH_FINGERPRINT: ${{ steps.plan.outputs.packaging_patch_fingerprint }}
+          PRIMARY_TAG: ${{ steps.plan.outputs.primary_tag }}
+          PUBLISH_TAGS: ${{ steps.plan.outputs.publish_tags }}
           UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
-          UPSTREAM_PIN: ${{ steps.plan.outputs.upstream_pin }}
           UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
           UPSTREAM_VERSION: ${{ steps.plan.outputs.upstream_version }}
-          UPSTREAM_VERSION_TAG: ${{ steps.plan.outputs.upstream_version_tag }}
         run: >-
           python3 .github/scripts/image_pipeline.py verify
           --result build-results/${{ matrix.upstream_branch }}.json
@@ -530,11 +522,37 @@ jobs:
 
       - name: Publish stable package landing version
         id: publish
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >-
           python3 .github/scripts/image_pipeline.py publish-stable-channel
           --results build-results
+
+  prune:
+    name: Prune Unreferenced Images
+    # Only upstream's tags are published, so each rebuild leaves the image it
+    # replaced untagged. Anything a tagged index still holds is kept.
+    if: ${{ !cancelled() }}
+    needs:
+      - publish
+      - publish_stable_channel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout pipeline source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Delete unreferenced package versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/image_pipeline.py prune
 
   summary:
     name: Run Summary
@@ -542,6 +560,7 @@ jobs:
     needs:
       - publish
       - publish_stable_channel
+      - prune
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

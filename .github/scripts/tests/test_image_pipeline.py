@@ -18,15 +18,17 @@ from image_pipeline import (  # noqa: E402
     app_version,
     apply_constraints,
     apply_patches,
+    build_id,
     decide_action,
     dockerfile_base_references,
     image_content_digests,
     image_version,
     index_platforms,
     inspect_image,
-    next_version,
     promoted_upstream_tags,
     promotion_command,
+    prunable_versions,
+    publication_tags,
     registry_output,
     stable_channel_command,
     tested_candidates,
@@ -103,7 +105,6 @@ class DecisionTests(unittest.TestCase):
             patch_fingerprint="sha256:patches",
             base_fingerprint="sha256:base",
             current=self.current,
-            latest=self.latest,
             force=False,
         )
 
@@ -119,7 +120,6 @@ class DecisionTests(unittest.TestCase):
             patch_fingerprint="sha256:patches",
             base_fingerprint="sha256:new-base",
             current=self.current,
-            latest=self.latest,
             force=False,
         )
 
@@ -135,7 +135,6 @@ class DecisionTests(unittest.TestCase):
             patch_fingerprint="sha256:new-patches",
             base_fingerprint="sha256:base",
             current=self.current,
-            latest=self.latest,
             force=False,
         )
 
@@ -155,12 +154,11 @@ class DecisionTests(unittest.TestCase):
             patch_fingerprint="sha256:patches",
             base_fingerprint="sha256:base",
             current=self.current,
-            latest=self.latest,
             force=False,
         )
 
         self.assertEqual(action, "build")
-        self.assertIn("Published build tag is missing or outdated", reason)
+        self.assertIn("Published build label is missing or outdated", reason)
 
     def test_development_version_uses_suffix(self):
         self.assertTrue(valid_version("dev", "2026.08.14.1-dev"))
@@ -330,10 +328,8 @@ class PromotionTests(unittest.TestCase):
         self.assertIn("index:org.opencontainers.image.version=1.0.3", command)
         self.assertIn("index:io.netspeedy.odysseus.build=2026.08.14.1", command)
         self.assertEqual(
-            command[-5:],
+            command[-3:],
             [
-                "--tag",
-                "ghcr.io/netspeedy/odysseusai:main",
                 "--tag",
                 "ghcr.io/netspeedy/odysseusai:latest",
                 f"ghcr.io/netspeedy/odysseusai@{digest}",
@@ -380,16 +376,12 @@ class RegistryTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 registry_output(["docker", "buildx", "imagetools", "inspect", "x", "--raw"])
 
-    def test_next_version_never_reuses_a_tag_because_of_an_outage(self, sleep):
+    def test_build_label_is_the_date_and_run(self, sleep):
         del sleep
-        now = datetime(2026, 11, 4, 12, tzinfo=timezone.utc)
-        with mock.patch.object(image_pipeline.subprocess, "run", return_value=OUTAGE):
-            with self.assertRaises(RuntimeError):
-                next_version("ghcr.io/netspeedy/odysseusai", "main", now)
-        with mock.patch.object(image_pipeline.subprocess, "run", return_value=MISSING):
-            self.assertEqual(
-                next_version("ghcr.io/netspeedy/odysseusai", "main", now), "2026.11.04.1"
-            )
+        now = datetime(2026, 11, 4, 23, 59, tzinfo=timezone.utc)
+        self.assertEqual(build_id("main", now, "142"), "2026.11.04.142")
+        self.assertEqual(build_id("dev", now, "142"), "2026.11.04.142-dev")
+        self.assertTrue(valid_version("dev", build_id("dev", now, "1")))
 
 
 class UpstreamTagTests(unittest.TestCase):
@@ -436,6 +428,36 @@ class UpstreamTagTests(unittest.TestCase):
         # Without a usable APP_VERSION there's only our build tag to report.
         self.assertEqual(image_version("main", "", self.SHA, "2026.11.04.5"), "2026.11.04.5")
 
+    def test_only_upstreams_tags_are_published(self):
+        self.assertEqual(
+            publication_tags("main", "1.0.3", "1.0.3-9d0d372", backfill=False, version_published=True),
+            ["latest", "1.0.3", "1.0.3-9d0d372"],
+        )
+        # A published pin isn't promoted again.
+        self.assertEqual(
+            publication_tags("main", "1.0.3", "", backfill=False, version_published=True),
+            ["latest", "1.0.3"],
+        )
+        self.assertEqual(
+            publication_tags("dev", "", "1.0.3-dev.c21980f", backfill=False, version_published=False),
+            ["dev", "1.0.3-dev.c21980f"],
+        )
+        self.assertEqual(
+            publication_tags("main", "", "", backfill=False, version_published=False), ["latest"]
+        )
+
+    def test_backfill_never_moves_a_newer_builds_tags(self):
+        # 1.0.3 belongs to the newest 1.0.3 build, so a backfill gets only its pin.
+        self.assertEqual(
+            publication_tags("main", "1.0.3", "1.0.3-a98013d", backfill=True, version_published=True),
+            ["1.0.3-a98013d"],
+        )
+        # A release with no image yet gets its version tag too.
+        self.assertEqual(
+            publication_tags("main", "1.0.2", "1.0.2-cf4e240", backfill=True, version_published=False),
+            ["1.0.2", "1.0.2-cf4e240"],
+        )
+
     @mock.patch.object(image_pipeline.time, "sleep")
     def test_published_pin_is_never_moved(self, sleep):
         del sleep
@@ -470,6 +492,38 @@ class UpstreamTagTests(unittest.TestCase):
         self.assertEqual(
             promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "skip", platforms), ("", "")
         )
+
+
+class PruneTests(unittest.TestCase):
+    NOW = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
+
+    @staticmethod
+    def version(name: str, tags: list[str], updated: str = "2026-11-05T09:00:00Z"):
+        return {
+            "id": hash(name) & 0xFFFF,
+            "name": name,
+            "updated_at": updated,
+            "metadata": {"container": {"tags": tags}},
+        }
+
+    def test_only_unreferenced_untagged_versions_are_pruned(self):
+        child = "sha256:" + "a" * 64
+        orphan = "sha256:" + "b" * 64
+        versions = [
+            self.version("sha256:" + "c" * 64, ["1.0.3"]),
+            # A platform image inside a tagged index is untagged, and must stay.
+            self.version(child, []),
+            self.version(orphan, []),
+        ]
+
+        stale = prunable_versions(versions, {child}, self.NOW)
+
+        self.assertEqual([version["name"] for version in stale], [orphan])
+
+    def test_recent_untagged_versions_wait_for_the_next_prune(self):
+        recent = self.version("sha256:" + "d" * 64, [], updated="2026-11-05T11:30:00Z")
+        self.assertEqual(prunable_versions([recent], set(), self.NOW), [])
+
 
 if __name__ == "__main__":
     unittest.main()

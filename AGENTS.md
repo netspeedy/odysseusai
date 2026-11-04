@@ -50,15 +50,15 @@ temporary build context.
   `github-actions[bot]` the author. Dependabot pull requests are squashed.
 - Odysseus Container Pipeline (`build-image.yml`, 04:17 UTC and on pushes
   that touch the pipeline): per channel, a plan job reads GHCR anonymously,
-  allocates the CalVer and runs upstream's tests for the patched code with
+  decides the tags and runs upstream's tests for the patched code with
   `test-upstream.sh`. It has no registry credential, so upstream code never
   runs next to one; keep it that way. It uploads the plan before the tests
   and a `tested-<branch>` marker after them. A build leg per platform
   (`linux/amd64` on `ubuntu-24.04`, `linux/arm64` on `ubuntu-24.04-arm`)
   builds the planned commit, pushes it by digest only and gates it natively
   with `smoke-test-image.sh` and `smoke-test-compose.sh`. The publish job
-  promotes only when every platform passed, as one index to the channel,
-  CalVer and upstream tags, then verifies the labels and platforms. Each
+  promotes only when every platform passed, as one index to the channel and
+  upstream tags, then verifies the labels and platforms. Each
   channel's legs depend only on that channel's artifacts, so a failed dev
   build never holds back stable. Failed candidates are deleted, but never
   once promotion has started: a promoted candidate is an untagged child of a
@@ -66,7 +66,12 @@ temporary build context.
   both channels are rebuilt without the layer cache (`fresh_build`) and
   published, because upstream's requirements are mostly unpinned and the
   cached pip layer would otherwise keep old releases until the base image or
-  requirements change.
+  requirements change. A last job prunes package versions no tag reaches,
+  such as the image a rebuild replaced; `prunable_versions` keeps anything a
+  tagged index still holds and anything younger than an hour. A dispatch
+  with `upstream_commit` backfills one older upstream main commit: only its
+  pin, plus its `X.Y.Z` if that release has no image, and the dev leg and
+  the landing version are left alone.
 - Dependabot (`.github/dependabot.yml`, daily) covers the Compose images, the
   GitHub Actions and the actionlint image in `scripts/actionlint/Dockerfile`.
 
@@ -101,12 +106,13 @@ temporary build context.
   mirror its docker-publish workflow, so change them when upstream changes
   that. The commit pins are immutable upstream, so a pin is promoted only by
   the first build of its commit that has every platform in `PLATFORMS`; a
-  pin missing one is republished once. CalVer and `main` are ours, in
-  addition.
-  The image's `org.opencontainers.image.version` is upstream's number too
-  (`X.Y.Z` on main, the dev pin on dev, from `image_version`), and the
-  CalVer goes in `io.netspeedy.odysseus.build`, which planning reads to
-  decide whether a channel is current.
+  pin missing one is republished once. Publish nothing else: stable is
+  `latest`, `X.Y.Z` and the pin, dev is `dev` and its pin, chosen by
+  `publication_tags`. The image's `org.opencontainers.image.version` is
+  upstream's number too (`X.Y.Z` on main, the dev pin on dev, from
+  `image_version`). Our build label, `io.netspeedy.odysseus.build`, is the
+  UTC date and the run number, and planning reads it to decide whether a
+  channel is current.
 - Use Conventional Commit subjects. Bodies are prose that explain why and how
   the change was checked.
 

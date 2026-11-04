@@ -55,6 +55,8 @@ def result_label(result: dict[str, Any], build_result: str) -> str:
         return "Published"
     if status == "current":
         return "Current"
+    if status == "not-run":
+        return "Not run"
     if build_result in {"failure", "cancelled", "timed_out"}:
         return "Failed"
     return "Incomplete"
@@ -108,14 +110,14 @@ def render(results: list[dict[str, Any]]) -> str:
         fallback = "Failed" if build_result != "success" else "No result artifacts"
         lines.append(f"| Image publishing | {fallback} | - |")
     landing = landing_label(os.environ.get("LANDING_RESULT", "unknown"))
-    lines.append(f"| Stable package landing version | {landing} | `latest`, `main` |")
+    lines.append(f"| Stable package landing version | {landing} | `latest` |")
 
     lines.extend(
         [
             "",
             "## Image Details",
             "",
-            "| Channel | Immutable tag | Moving tags | Upstream tags | Upstream revision "
+            "| Channel | Build | Moving tags | Upstream tags | Upstream revision "
             "| Digest | Decision |",
             "| --- | --- | --- | --- | --- | --- | --- |",
         ]

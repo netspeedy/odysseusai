@@ -71,8 +71,8 @@ mv "${settings_tmp}" "${target_dir}/config/searxng/settings.yml"
 awk '
   function print_odysseus_image() {
     print "    # Prebuilt by netspeedy/odysseusai from upstream Odysseus and smoke-tested"
-    print "    # with this Compose file before it is tagged. Choose a channel or pin a"
-    print "    # CalVer build with ODYSSEUS_IMAGE_TAG in .env."
+    print "    # with this Compose file before it is tagged. Choose a channel, release or"
+    print "    # commit pin with ODYSSEUS_IMAGE_TAG in .env, using upstream'"'"'s tag names."
     print "    image: ghcr.io/netspeedy/odysseusai:${ODYSSEUS_IMAGE_TAG:-latest}"
     odysseus_replacements++
   }
@@ -217,7 +217,8 @@ mv "${compose_tmp}" "${target_dir}/docker-compose.yml"
 
 {
   echo "# Image channel from ghcr.io/netspeedy/odysseusai."
-  echo "# Use latest/main for stable, dev for development, or a CalVer tag to pin."
+  echo "# latest for stable, dev for development, X.Y.Z for a release, or upstream's"
+  echo "# X.Y.Z-<sha> to pin a commit."
   echo "ODYSSEUS_IMAGE_TAG=latest"
   echo
   echo "# Reliable engines for the bundled SearXNG release."
