@@ -36,18 +36,22 @@ temporary build context.
   authored as the maintainer. Keep that split: the job that can push must never
   run upstream code.
 - Build and Validate (`build-and-validate.yml`): pull requests, pushes to
-  main and dispatch. Lints, unit tests, patches against upstream main and dev,
-  and the bundle checks.
+  main and dispatch. Lints, unit tests, patches against upstream main and dev
+  together with upstream's tests for the patched code, and the bundle checks.
 - Automation Auto Merge (04:05 UTC, and after Build and Validate) merges
   Dependabot and bundle sync pull requests once Build and Validate has passed
   for the head revision, ahead of the image run. Sync pull requests are
   rebase-merged so the maintainer stays the commit author; a squash would make
   `github-actions[bot]` the author. Dependabot pull requests are squashed.
 - Odysseus Container Pipeline (`build-image.yml`, 04:17 UTC and on pushes
-  that touch the pipeline): builds main and dev candidates, pushes them by
-  digest only, gates them with `smoke-test-image.sh` and `smoke-test-compose.sh`,
-  and only then promotes them to their channel and CalVer tags and verifies the
-  published labels. A failed candidate is deleted.
+  that touch the pipeline): for each channel that needs a build, runs
+  upstream's tests for the patched code with `test-upstream.sh`, builds the
+  candidate, pushes it by digest only, gates it with `smoke-test-image.sh` and
+  `smoke-test-compose.sh`, and only then promotes it to its channel and CalVer
+  tags and verifies the published labels. A failed candidate is deleted.
+  Planning reads GHCR anonymously and the registry login comes after the
+  upstream tests; keep it there, so upstream code never runs next to a
+  registry credential.
 
 ## Rules
 
@@ -57,6 +61,10 @@ temporary build context.
   reason in the patch's own comments and in the README's "What the packaging
   changes" section. Features belong upstream. When upstream fixes something,
   drop the patch rather than keeping it as a no-op.
+- If a patch changes behaviour that an upstream test asserts, the same patch
+  updates that test. `upstream_tests.py` selects the upstream test files a
+  patch edits or that import a module it edits, and `test-upstream.sh` runs
+  them on the Python version of upstream's Dockerfile.
 - Registry and network calls retry: use `registry_output` in
   `image_pipeline.py` and `retry` from `.github/scripts/lib/retry.sh`. A
   registry error must never be read as "tag not published".
@@ -78,8 +86,9 @@ actionlint
 ```
 
 For a patch change, run `python3 .github/scripts/image_pipeline.py prepare`
-against fresh clones of upstream main and dev. Only the image workflow builds
-images, so the image and Compose smoke tests run after merge.
+against fresh clones of upstream main and dev, then
+`.github/scripts/test-upstream.sh <clone>` on each. Only the image workflow
+builds images, so the image and Compose smoke tests run after merge.
 
 ## Documentation sync
 

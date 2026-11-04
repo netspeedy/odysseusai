@@ -90,7 +90,7 @@ Nothing here forks Odysseus. The pipeline clones upstream, applies a short list 
 - `0002-gpt5-vision-detection.patch`, which tells Odysseus that GPT-5-family chat models accept images, so attachments aren't dropped on OpenAI-compatible providers
 - `mcp<2`, a dependency pin that keeps the bundled MCP 1.x servers working; upstream carries the same pin today
 
-Each one is fingerprinted in the image labels, and a change to any of them triggers a rebuild. On the Compose side, the sync swaps upstream's image for this one, sets `SEARXNG_GENERAL_ENGINES` to `bing,duckduckgo`, which pass the search smoke test from CI, and removes optional SearXNG engines that fail at startup without Tor or outbound access. It also migrates an existing SearXNG volume to that profile while keeping its secret key. SearXNG, ChromaDB and ntfy stay on the tags and digests upstream pins.
+Each one is fingerprinted in the image labels, and a change to any of them triggers a rebuild. Before every build, upstream's own tests for the code the patches touch run with the patches applied, so a patch that changes behaviour an upstream test asserts has to update that test as well. On the Compose side, the sync swaps upstream's image for this one, sets `SEARXNG_GENERAL_ENGINES` to `bing,duckduckgo`, which pass the search smoke test from CI, and removes optional SearXNG engines that fail at startup without Tor or outbound access. It also migrates an existing SearXNG volume to that profile while keeping its secret key. SearXNG, ChromaDB and ntfy stay on the tags and digests upstream pins.
 
 ## How it works
 
@@ -104,14 +104,14 @@ flowchart LR
   validate -->|passed| merge[Automation Auto Merge<br/>04:05]
   merge --> images
   up --> images[Odysseus Container Pipeline<br/>04:17]
-  images --> gates{Image smoke test<br/>then full stack and search}
+  images --> gates{Upstream tests, image smoke test<br/>then full stack and search}
   gates -->|passed| tags[latest, main, dev<br/>and a CalVer tag]
   gates -->|failed| drop[Candidate deleted]
 ```
 
-Sync Deployment Bundle applies the packaging overrides to upstream's Compose files, validates every overlay combination, and boots SearXNG for a real query. It does that in a job with no write access, because it runs upstream's configuration. If anything changed, a second job opens a pull request listing the upstream commit, the changed files and any image pin changes. Build and Validate runs on that pull request and on every other one: it lints the workflows and scripts, runs the pipeline's unit tests, checks that every patch still applies to upstream `main` and `dev`, and repeats the bundle checks. Automation Auto Merge merges the pull request once it passes, which starts an image run against the new bundle.
+Sync Deployment Bundle applies the packaging overrides to upstream's Compose files, validates every overlay combination, and boots SearXNG for a real query. It does that in a job with no write access, because it runs upstream's configuration. If anything changed, a second job opens a pull request listing the upstream commit, the changed files and any image pin changes. Build and Validate runs on that pull request and on every other one: it lints the workflows and scripts, runs the pipeline's unit tests, checks that every patch still applies to upstream `main` and `dev` and that upstream's tests for the patched code still pass, and repeats the bundle checks. Automation Auto Merge merges the pull request once it passes, which starts an image run against the new bundle.
 
-Odysseus Container Pipeline builds a candidate for each channel and pushes it by digest only, then runs it through the two gates. A candidate that fails is deleted, and nothing moves. One that passes is promoted to its channel and CalVer tags, and the published labels are verified against what was built.
+Odysseus Container Pipeline starts each channel that needs a build by running upstream's tests for the patched code, the test files a patch edits or that import a module it edits. It then builds a candidate, pushes it by digest only, and runs it through the image and Compose gates. A candidate that fails is deleted, and nothing moves. One that passes is promoted to its channel and CalVer tags, and the published labels are verified against what was built.
 
 ## Development
 
@@ -121,7 +121,7 @@ The workflows are in `.github/workflows/` and the scripts they call are in `.git
 make test
 ```
 
-`.github/scripts/validate-bundle.sh` and `.github/scripts/smoke-test-searxng.sh` run the bundle checks locally with Docker. To try a sync, clone upstream next to this repository and run `.github/scripts/sync-upstream-runtime.sh ../odysseus .`.
+`.github/scripts/validate-bundle.sh` and `.github/scripts/smoke-test-searxng.sh` run the bundle checks locally with Docker. To try a sync, clone upstream next to this repository and run `.github/scripts/sync-upstream-runtime.sh ../odysseus .`. To run upstream's tests against the patches, apply them to that clone with `python3 .github/scripts/image_pipeline.py prepare --source ../odysseus --constraints .github/constraints/requirements.txt --patches .github/patches`, then run `.github/scripts/test-upstream.sh ../odysseus`, which needs uv.
 
 The banner at the top of this README is generated. Edit `scripts/readme/build_readme_hero.py` rather than the SVG, and rebuild it with `make readme-hero`. That runs the script with `uv`, which installs the pinned fontTools it subsets the fonts with, and the first run needs network access to download the fonts from assets.netspeedy.io. The same script draws the repository's social preview card, and `make social-card` renders the PNG to upload in the repository settings.
 
