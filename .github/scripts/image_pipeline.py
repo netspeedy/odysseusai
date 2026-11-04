@@ -29,6 +29,10 @@ DOCKER_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 # How buildx reports a reference that does not exist, as opposed to a registry
 # or network failure that says nothing about whether it exists.
 MISSING_REFERENCE_RE = re.compile(r": not found$|MANIFEST_UNKNOWN|manifest unknown", re.M)
+# The tag each channel is published under, as upstream's are.
+CHANNEL_TAGS = {"main": "latest", "dev": "dev"}
+# Untagged package versions younger than this are left for the next prune.
+PRUNE_GRACE_SECONDS = 3600
 REGISTRY_ATTEMPTS = 4
 REGISTRY_RETRY_DELAY = 5.0
 
@@ -371,7 +375,7 @@ def app_version(source: Path) -> str:
     version = match.group(1) if match else ""
     if not DOCKER_TAG_RE.fullmatch(version):
         return ""
-    # A version shaped like our CalVer would collide with the build tags.
+    # A version shaped like our build label would read as one.
     if valid_version("main", version) or valid_version("dev", version):
         return ""
     return version
@@ -394,7 +398,7 @@ def image_version(branch: str, version: str, upstream_sha: str, build: str) -> s
     """Return the version an image reports: upstream's number, or the build tag.
 
     Stable reports X.Y.Z and dev its pin, X.Y.Z-dev.<sha7>, since a dev build
-    isn't that release. The CalVer build tag goes in its own label.
+    isn't that release. Our build label goes in its own label.
     """
     version_tag, pin_tag = upstream_tags(branch, version, upstream_sha)
     return version_tag or pin_tag or build
@@ -433,7 +437,6 @@ def decide_action(
     patch_fingerprint: str,
     base_fingerprint: str,
     current: dict[str, Any] | None,
-    latest: dict[str, Any] | None,
     force: bool,
 ) -> tuple[str, str]:
     """Return the build action and a human-readable decision reason."""
@@ -461,29 +464,35 @@ def decide_action(
     if labels.get("io.netspeedy.odysseus.base-image-fingerprint") != base_fingerprint:
         reasons.append("Base image changed")
     if not valid_version(branch, labels.get("io.netspeedy.odysseus.build", "")):
-        reasons.append("Published build tag is missing or outdated")
-
-    if branch == "main":
-        current_digest = current.get("manifest", {}).get("digest")
-        latest_digest = (latest or {}).get("manifest", {}).get("digest")
-        if not latest_digest:
-            reasons.append("Latest tag is missing")
-        elif latest_digest != current_digest:
-            reasons.append("Latest tag does not match stable")
+        reasons.append("Published build label is missing or outdated")
 
     if reasons:
         return "build", "; ".join(reasons)
     return "skip", "Source and image inputs are unchanged"
 
 
-def next_version(image_name: str, branch: str, now: datetime) -> str:
-    """Return the first unused CalVer tag for the current UTC date."""
-    date_version = now.astimezone(timezone.utc).strftime("%Y.%m.%d")
+def build_id(branch: str, now: datetime, run_number: str) -> str:
+    """Return a build's label: the UTC date and the workflow run that built it.
+
+    It's only a label, so the run number keeps it unique without the registry
+    lookups a per-day counter would need.
+    """
     suffix = "" if branch == "main" else "-dev"
-    sequence = 1
-    while inspect_image(f"{image_name}:{date_version}.{sequence}{suffix}") is not None:
-        sequence += 1
-    return f"{date_version}.{sequence}{suffix}"
+    return f"{now.astimezone(timezone.utc):%Y.%m.%d}.{int(run_number)}{suffix}"
+
+
+def publication_tags(
+    branch: str, version_tag: str, pin_tag: str, *, backfill: bool, version_published: bool
+) -> list[str]:
+    """Return the tags a build is published under: upstream's own, nothing else.
+
+    A backfill publishes an older commit's pin, and its X.Y.Z only when that
+    release has no image yet, so it never moves a tag a newer build holds.
+    """
+    if backfill:
+        version_tags = [version_tag] if version_tag and not version_published else []
+        return version_tags + ([pin_tag] if pin_tag else [])
+    return [CHANNEL_TAGS[branch]] + [tag for tag in (version_tag, pin_tag) if tag]
 
 
 def github_output(values: dict[str, str]) -> None:
@@ -544,61 +553,102 @@ def plan(args: argparse.Namespace) -> None:
     patch_fingerprint = os.environ["PACKAGING_PATCH_FINGERPRINT"]
     force = os.environ.get("FORCE_BUILD", "false").lower() == "true"
     platforms = [platform.strip() for platform in os.environ["PLATFORMS"].split(",")]
-    moving_tags = [tag.strip() for tag in os.environ["MOVING_TAGS"].split(",")]
+    backfill_commit = os.environ.get("BACKFILL_COMMIT", "")
+    run_number = os.environ.get("GITHUB_RUN_NUMBER", "1")
 
     upstream_sha = command_output(["git", "rev-parse", "HEAD"], cwd=source)
+    backfill = bool(backfill_commit) and branch == "main"
+    if backfill:
+        if upstream_sha != backfill_commit:
+            raise RuntimeError(f"Give the backfill commit's full SHA, not {backfill_commit!r}")
+        # Only stable releases are backfilled, so the commit must be on main.
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", upstream_sha, "origin/main"],
+            cwd=source,
+            check=False,
+        )
+        if ancestry.returncode != 0:
+            raise RuntimeError(f"{upstream_sha} is not on upstream main")
     base_images, base_fingerprint = resolve_base_images(source / "Dockerfile")
-    current = inspect_image(f"{image_name}:{branch}")
-    latest = inspect_image(f"{image_name}:latest") if branch == "main" else None
-    action, reason = decide_action(
-        branch=branch,
-        upstream_sha=upstream_sha,
-        packaging_schema=packaging_schema,
-        constraint_fingerprint=constraint_fingerprint,
-        patch_fingerprint=patch_fingerprint,
-        base_fingerprint=base_fingerprint,
-        current=current,
-        latest=latest,
-        force=force,
-    )
-
-    now = datetime.now(timezone.utc).replace(microsecond=0)
-    if action == "build":
-        version = next_version(image_name, branch, now)
-    else:
-        version = current["labels"]["io.netspeedy.odysseus.build"]
-
-    # Upstream's own tags, so a pin on its image works on ours. The pin is set
-    # by the first build of a commit that has every platform, then never moved.
     upstream_version = app_version(source)
     if not upstream_version:
         print("::warning::No usable APP_VERSION in upstream src/constants.py; "
               "publishing without upstream's version tags")
-    version_tag, pin_tag = promoted_upstream_tags(
-        image_name, branch, upstream_version, upstream_sha, action, platforms
-    )
-    extra_tags = [tag for tag in (version_tag, pin_tag) if tag]
+    version_tag, pin_tag = upstream_tags(branch, upstream_version, upstream_sha)
+
+    current = None
+    if backfill:
+        primary_tag = pin_tag
+        if not pin_tag:
+            raise RuntimeError("A backfill needs upstream's APP_VERSION for its pin")
+        published = inspect_image(f"{image_name}:{pin_tag}")
+        complete = published is not None and set(platforms) <= set(
+            index_platforms(inspect_raw_manifest(f"{image_name}:{pin_tag}"))
+        )
+        action, reason = (
+            ("none", f"{pin_tag} is already published")
+            if complete
+            else ("build", f"Backfill of {pin_tag}")
+        )
+    elif backfill_commit:
+        primary_tag = CHANNEL_TAGS[branch]
+        action, reason = "none", "Backfill runs leave this channel alone"
+    else:
+        primary_tag = CHANNEL_TAGS[branch]
+        current = inspect_image(f"{image_name}:{primary_tag}")
+        action, reason = decide_action(
+            branch=branch,
+            upstream_sha=upstream_sha,
+            packaging_schema=packaging_schema,
+            constraint_fingerprint=constraint_fingerprint,
+            patch_fingerprint=patch_fingerprint,
+            base_fingerprint=base_fingerprint,
+            current=current,
+            force=force,
+        )
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    if action == "skip":
+        version = current["labels"]["io.netspeedy.odysseus.build"]
+    else:
+        version = build_id(branch, now, run_number)
+
+    # Upstream's own tags, so a pin on its image works on ours. The pin is set
+    # by the first build of a commit that has every platform, then never moved.
+    tags: list[str] = []
+    if action == "build":
+        version_tag, pin_tag = promoted_upstream_tags(
+            image_name, branch, upstream_version, upstream_sha, action, platforms
+        )
+        version_published = bool(version_tag) and backfill and (
+            inspect_image(f"{image_name}:{version_tag}") is not None
+        )
+        tags = publication_tags(
+            branch, version_tag, pin_tag,
+            backfill=backfill, version_published=version_published,
+        )
     reported_version = image_version(branch, upstream_version, upstream_sha, version)
 
     base_images_value = ",".join(base_images)
     build_created = now.isoformat().replace("+00:00", "Z")
     result = {
         "action": action,
+        "backfill": backfill,
         "base_fingerprint": base_fingerprint,
         "base_images": base_images,
         "branch": branch,
         "channel": channel_name,
         "image_version": reported_version,
-        "moving_tags": moving_tags,
+        "moving_tags": [] if backfill else [CHANNEL_TAGS[branch]],
         "packaging_constraint_fingerprint": constraint_fingerprint,
         "packaging_constraints": packaging_constraints,
         "packaging_patch_fingerprint": patch_fingerprint,
         "packaging_patches": packaging_patches,
-        "previous_channel_digest": current["manifest"]["digest"] if current else "",
+        "primary_tag": primary_tag,
         "reason": reason,
-        "status": "planned",
+        "status": "not-run" if action == "none" else "planned",
         "upstream_sha": upstream_sha,
-        "upstream_tags": extra_tags,
+        "upstream_tags": [tag for tag in tags if tag not in CHANNEL_TAGS.values()],
         "upstream_version": upstream_version,
         "version": version,
     }
@@ -612,19 +662,19 @@ def plan(args: argparse.Namespace) -> None:
         "packaging_constraints": packaging_constraints,
         "packaging_patch_fingerprint": patch_fingerprint,
         "packaging_patches": packaging_patches,
+        "primary_tag": primary_tag,
+        "publish_tags": ",".join(tags),
         "reason": reason,
-        "upstream_pin": pin_tag,
         "upstream_sha": upstream_sha,
         "upstream_version": upstream_version,
-        "upstream_version_tag": version_tag,
         "version": version,
     }
     # The build and publish jobs replay these with load-plan.
     result["outputs"] = outputs
     write_json(result_path, result)
     github_output(outputs)
-    tags_note = f" with {', '.join(extra_tags)}" if extra_tags else ""
-    print(f"{channel_name}: {action} {reported_version} as {version}{tags_note} ({reason})")
+    tags_note = f" as {', '.join(tags)}" if tags else ""
+    print(f"{channel_name}: {action} {reported_version}, labelled {version}{tags_note} ({reason})")
 
 
 def load_plan(args: argparse.Namespace) -> None:
@@ -658,17 +708,10 @@ def verify(args: argparse.Namespace) -> None:
     base_fingerprint = os.environ["BASE_IMAGE_FINGERPRINT"]
     base_images = os.environ["BASE_IMAGES"]
     upstream_version = os.environ.get("UPSTREAM_VERSION", "")
-    # Only the upstream tags this run promoted; both are empty on a skip.
-    upstream_tags_promoted = [
-        tag
-        for tag in (
-            os.environ.get("UPSTREAM_VERSION_TAG", ""),
-            os.environ.get("UPSTREAM_PIN", ""),
-        )
-        if tag
-    ]
+    # Only the tags this run published; empty when the channel was current.
+    published_tags = [tag for tag in os.environ.get("PUBLISH_TAGS", "").split(",") if tag]
     platforms = [platform.strip() for platform in os.environ["PLATFORMS"].split(",")]
-    image_ref = f"{image_name}:{branch}"
+    image_ref = f"{image_name}:{os.environ['PRIMARY_TAG']}"
 
     image = inspect_image(image_ref)
     if image is None:
@@ -747,55 +790,35 @@ def verify(args: argparse.Namespace) -> None:
     )
 
     if not valid_version(branch, expected_version):
-        raise RuntimeError(f"Invalid {branch} CalVer tag: {expected_version}")
+        raise RuntimeError(f"Invalid {branch} build label: {expected_version}")
+    require_equal(index_platforms(raw_manifest), sorted(platforms), "Published platforms")
 
-    channel_digest = image["manifest"]["digest"]
-    version_image = inspect_image(f"{image_name}:{expected_version}")
-    if version_image is None:
-        raise RuntimeError(f"Version tag is unavailable: {expected_version}")
-    version_manifest = inspect_raw_manifest(f"{image_name}:{expected_version}")
-    require_same_image_content(
-        image,
-        raw_manifest,
-        version_image,
-        version_manifest,
-        "Channel content",
-    )
-    version_digest = version_image["manifest"]["digest"]
-    require_equal(
-        index_platforms(version_manifest),
-        sorted(platforms),
-        "Published platforms",
-    )
-
-    for tag in upstream_tags_promoted:
-        tag_image = inspect_image(f"{image_name}:{tag}")
+    for tag in published_tags:
+        tag_ref = f"{image_name}:{tag}"
+        tag_image = inspect_image(tag_ref)
         if tag_image is None:
-            raise RuntimeError(f"Upstream tag is unavailable: {tag}")
+            raise RuntimeError(f"Published tag is unavailable: {tag}")
         require_same_image_content(
             tag_image,
-            inspect_raw_manifest(f"{image_name}:{tag}"),
-            version_image,
-            version_manifest,
-            f"Upstream tag {tag} content",
+            inspect_raw_manifest(tag_ref),
+            image,
+            raw_manifest,
+            f"Tag {tag} content",
         )
 
-    if branch == "main":
-        latest_image = inspect_image(f"{image_name}:latest")
-        if latest_image is None:
-            raise RuntimeError("Stable latest tag is unavailable")
-        require_equal(
-            latest_image["manifest"].get("digest"),
-            channel_digest,
-            "Latest tag digest",
-        )
+    # The stable landing version wraps the published index; record that index.
+    annotations = raw_manifest.get("annotations", {})
+    digest = image["manifest"]["digest"]
+    if annotations.get("io.netspeedy.odysseus.channel-pointer") == "stable":
+        digest = annotations.get("io.netspeedy.odysseus.stable-digest", "")
+        if not DIGEST_RE.fullmatch(digest):
+            raise RuntimeError(f"Stable landing version names no index: {digest!r}")
 
-    result["channel_digest"] = channel_digest
-    result["digest"] = version_digest
+    result["digest"] = digest
     result["status"] = "published" if result["action"] == "build" else "current"
     write_json(result_path, result)
-    github_output({"digest": version_digest, "version": expected_version})
-    print(f"Verified {image_ref}@{channel_digest} contains {version_digest}")
+    github_output({"digest": digest, "version": expected_version})
+    print(f"Verified {image_ref} as {digest} on {', '.join(platforms)}")
 
 
 def index_platforms(raw_manifest: dict[str, Any]) -> list[str]:
@@ -872,7 +895,7 @@ def promote(args: argparse.Namespace) -> None:
     del args
     image_name = os.environ["IMAGE_NAME"]
     digests = os.environ["IMAGE_DIGESTS"].split()
-    tags = [tag.strip() for tag in os.environ["TAGS"].splitlines() if tag.strip()]
+    tags = [f"{image_name}:{tag}" for tag in os.environ["PUBLISH_TAGS"].split(",") if tag]
     annotations = [
         inspect_raw_manifest(f"{image_name}@{digest}").get("annotations", {})
         for digest in digests
@@ -919,8 +942,7 @@ def stable_channel_command(
     command = ["docker", "buildx", "imagetools", "create"]
     for key, value in annotations.items():
         command.extend(["--annotation", f"index:{key}={value}"])
-    for tag in ("main", "latest"):
-        command.extend(["--tag", f"{image_name}:{tag}"])
+    command.extend(["--tag", f"{image_name}:{CHANNEL_TAGS['main']}"])
     command.append(f"{image_name}@{digest}")
     return command
 
@@ -936,6 +958,10 @@ def publish_stable_channel(args: argparse.Namespace) -> None:
     )
     if stable is None:
         raise RuntimeError("Stable image result is unavailable")
+    if stable.get("backfill"):
+        print("Backfill run: the stable landing version is unchanged")
+        github_output({"status": "current"})
+        return
     if stable.get("status") not in {"published", "current"}:
         raise RuntimeError(
             f"Stable image did not pass its gates (status {stable.get('status')!r})"
@@ -961,7 +987,7 @@ def publish_stable_channel(args: argparse.Namespace) -> None:
         raise RuntimeError(f"Stable image is unavailable: {source_ref}")
     source_manifest = inspect_raw_manifest(source_ref)
 
-    channel_ref = f"{image_name}:main"
+    channel_ref = f"{image_name}:{CHANNEL_TAGS['main']}"
     channel_image = inspect_image(channel_ref)
     channel_manifest = inspect_raw_manifest(channel_ref) if channel_image else {}
     current_annotations = channel_manifest.get("annotations", {})
@@ -988,17 +1014,6 @@ def publish_stable_channel(args: argparse.Namespace) -> None:
         )
         return
 
-    previous_digest = stable.get("previous_channel_digest", "")
-    previous_is_pointer = False
-    if DIGEST_RE.fullmatch(previous_digest) and previous_digest != digest:
-        previous_manifest = inspect_raw_manifest(f"{image_name}@{previous_digest}")
-        previous_is_pointer = (
-            previous_manifest.get("annotations", {}).get(
-                "io.netspeedy.odysseus.channel-pointer"
-            )
-            == "stable"
-        )
-
     registry_output(
         stable_channel_command(
             image_name,
@@ -1014,7 +1029,7 @@ def publish_stable_channel(args: argparse.Namespace) -> None:
 
     channel_image = inspect_image(channel_ref)
     if channel_image is None:
-        raise RuntimeError("Stable main tag is unavailable after publication")
+        raise RuntimeError("Stable latest tag is unavailable after publication")
     channel_manifest = inspect_raw_manifest(channel_ref)
     require_equal(
         channel_image["manifest"].get("mediaType"),
@@ -1036,24 +1051,7 @@ def publish_stable_channel(args: argparse.Namespace) -> None:
         "Stable channel source digest",
     )
 
-    latest_image = inspect_image(f"{image_name}:latest")
-    if latest_image is None:
-        raise RuntimeError("Stable latest tag is unavailable after publication")
-    require_equal(
-        latest_image["manifest"].get("digest"),
-        channel_image["manifest"].get("digest"),
-        "Stable moving tag digest",
-    )
-
     channel_digest = channel_image["manifest"]["digest"]
-    if previous_is_pointer and previous_digest != channel_digest:
-        delete_untagged_package_version(
-            os.environ["GH_TOKEN"],
-            os.environ["GITHUB_REPOSITORY_OWNER"],
-            image_name,
-            previous_digest,
-            "superseded stable channel",
-        )
     github_output({"digest": channel_digest, "status": "refreshed"})
     print(f"Published stable package landing version {channel_digest}")
 
@@ -1105,6 +1103,83 @@ def delete_untagged_package_version(
     raise RuntimeError(
         f"Untagged {description} package version was not found: {digest}"
     )
+
+
+def package_versions(token: str, owner: str, image_name: str) -> list[dict[str, Any]]:
+    """Return every version of the container package."""
+    package = urllib.parse.quote(image_name.rsplit("/", 1)[-1], safe="")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    versions: list[dict[str, Any]] = []
+    for page in range(1, 51):
+        url = (
+            f"https://api.github.com/orgs/{owner}/packages/container/{package}/versions"
+            f"?per_page=100&page={page}"
+        )
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=15
+        ) as response:
+            batch = json.load(response)
+        versions.extend(batch)
+        if len(batch) < 100:
+            return versions
+    raise RuntimeError("The package has more versions than prune reads")
+
+
+def prunable_versions(
+    versions: list[dict[str, Any]], referenced: set[str], now: datetime
+) -> list[dict[str, Any]]:
+    """Return untagged versions no tagged index holds, past the grace period."""
+    stale = []
+    for version in versions:
+        if version.get("metadata", {}).get("container", {}).get("tags"):
+            continue
+        if version.get("name") in referenced:
+            continue
+        updated = datetime.fromisoformat(version["updated_at"].replace("Z", "+00:00"))
+        if (now - updated).total_seconds() < PRUNE_GRACE_SECONDS:
+            continue
+        stale.append(version)
+    return stale
+
+
+def prune(args: argparse.Namespace) -> None:
+    """Delete package versions that no tag reaches any more.
+
+    With only upstream's tags, a rebuild leaves the image it replaced untagged,
+    and so do the platform images inside it. Anything still inside a tagged
+    index is kept, and any registry error stops the prune before it deletes.
+    """
+    del args
+    token = os.environ["GH_TOKEN"]
+    owner = os.environ["GITHUB_REPOSITORY_OWNER"]
+    image_name = os.environ["IMAGE_NAME"]
+    versions = package_versions(token, owner, image_name)
+    referenced: set[str] = set()
+    for version in versions:
+        if version.get("metadata", {}).get("container", {}).get("tags"):
+            raw = inspect_raw_manifest(f"{image_name}@{version['name']}")
+            referenced.update(child["digest"] for child in raw.get("manifests", []))
+    stale = prunable_versions(versions, referenced, datetime.now(timezone.utc))
+    package = urllib.parse.quote(image_name.rsplit("/", 1)[-1], safe="")
+    for version in stale:
+        request = urllib.request.Request(
+            f"https://api.github.com/orgs/{owner}/packages/container/{package}"
+            f"/versions/{version['id']}",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            method="DELETE",
+        )
+        with urllib.request.urlopen(request, timeout=15):
+            pass
+        print(f"Deleted unreferenced package version {version['name']}")
+    print(f"Pruned {len(stale)} of {len(versions)} package versions")
 
 
 def cleanup(args: argparse.Namespace) -> None:
@@ -1171,6 +1246,11 @@ def parser() -> argparse.ArgumentParser:
     )
     stable_channel_parser.add_argument("--results", required=True)
     stable_channel_parser.set_defaults(handler=publish_stable_channel)
+
+    prune_parser = commands.add_parser(
+        "prune", help="Delete package versions that no tag reaches"
+    )
+    prune_parser.set_defaults(handler=prune)
 
     cleanup_parser = commands.add_parser(
         "cleanup", help="Delete failed untagged candidate digests"

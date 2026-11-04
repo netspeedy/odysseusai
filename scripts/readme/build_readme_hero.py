@@ -105,7 +105,7 @@ ADVANCE = {
 }
 
 # The last stable tags the pipeline published, so the scene shows real names.
-TAGS = ("latest", "main", "2026.11.04.1")
+TAGS = ("latest", "1.0.3", "1.0.3-9d0d372")
 
 
 # Fonts
@@ -650,7 +650,7 @@ CARD = {
     "desc": (
         "A star chart with the publish pipeline plotted as a course, from upstream main "
         "through the patch, image smoke test and Compose stack checks to an amber star at "
-        "ghcr.io, where the image is tagged latest, main and its CalVer version."
+        "ghcr.io, where the image is tagged latest with upstream's version and commit pin."
     ),
     "headline": ("Odysseus, ", "prebuilt", ".", "Tested before it ships."),
     "body": [
