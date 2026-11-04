@@ -280,6 +280,9 @@ jobs:
 
   publish_stable_channel:
     name: Publish Stable Package Landing Version
+    # A failed development leg must not hold back a stable image that passed.
+    # The step itself refuses to run unless the stable leg published or was current.
+    if: ${{ always() && needs.sync_deployment.result == 'success' }}
     needs:
       - sync_deployment
       - publish
