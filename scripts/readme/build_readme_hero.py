@@ -8,6 +8,10 @@ as a course, from upstream main through the patch, image smoke test and Compose 
 GHCR. A comet runs the course and lights each waypoint, then the destination flares amber and
 the promoted tags appear above it.
 
+The same copy and chart also make assets/odysseusai-social-card.svg, the repository's 1280x640
+social preview. GitHub only takes an uploaded image for that, so `make social-card` renders the
+PNG beside it, which is uploaded by hand in the repository settings.
+
 Edit the copy, layout or timing here and run `make readme-hero` rather than editing the
 generated SVG. The headline is positioned from measured advances (see ADVANCE); if you change
 its words, measure them again with measure_headline.py. Inter and JetBrains Mono (SIL Open Font
@@ -28,6 +32,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "assets" / "odysseusai-readme-hero.svg"
+SOCIAL_OUTPUT = ROOT / "assets" / "odysseusai-social-card.svg"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
@@ -208,14 +213,20 @@ def chip(
 # Shared card
 
 
-def starfield(free: list[tuple[float, float, float, float]]) -> tuple[list[str], list[str]]:
+def starfield(
+    free: list[tuple[float, float, float, float]],
+    width: float = 1200,
+    height: float = 400,
+    count: int = STARS,
+) -> tuple[list[str], list[str]]:
     """Background gradient and nebula defs, plus the body: base, glows and seeded stars."""
     rng = random.Random(STAR_SEED)
+    sx, sy = width / 1200, height / 400
     stars = []
     tries = 0
-    while len(stars) < STARS and tries < STARS * 50:
+    while len(stars) < count and tries < count * 50:
         tries += 1
-        x, y = rng.uniform(8, 1192), rng.uniform(8, 392)
+        x, y = rng.uniform(8, width - 8), rng.uniform(8, height - 8)
         if any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in free):
             continue
         radius = rng.choice([0.55, 0.6, 0.7, 0.8, 0.9, 1.0, 1.15])
@@ -248,9 +259,11 @@ def starfield(free: list[tuple[float, float, float, float]]) -> tuple[list[str],
         ),
     ]
     body = [
-        '    <rect width="1200" height="400" fill="url(#spaceBg)" />',
-        '    <ellipse cx="190" cy="-30" rx="520" ry="260" fill="url(#nebIndigo)" />',
-        '    <ellipse cx="990" cy="430" rx="560" ry="300" fill="url(#nebIris)" opacity="0.55" />',
+        f'    <rect width="{num(width)}" height="{num(height)}" fill="url(#spaceBg)" />',
+        f'    <ellipse cx="{num(190 * sx)}" cy="{num(-30 * sy)}" rx="{num(520 * sx)}" '
+        f'ry="{num(260 * sy)}" fill="url(#nebIndigo)" />',
+        f'    <ellipse cx="{num(990 * sx)}" cy="{num(430 * sy)}" rx="{num(560 * sx)}" '
+        f'ry="{num(300 * sy)}" fill="url(#nebIris)" opacity="0.55" />',
         f'    <g fill="#D6DDFF">{plain}</g>',
         f'    <g>{"".join(twinkling)}</g>',
     ]
@@ -653,15 +666,72 @@ def build_svg(spec: dict = CARD) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
-    svg = build_svg()
+# Social card: the repository's social preview, 1280x640 as GitHub recommends. The same copy and
+# chart as the hero, laid out for 2:1 and still: it is uploaded as a PNG, so it shows the rest
+# frame, with every waypoint lit and the tags in place.
+
+CARD_W, CARD_H = 1280, 640
+CARD_COPY = "translate(16 44) scale(1.3)"
+CARD_SCENE = "translate(52 96)"
+
+
+def build_social_card(spec: dict = CARD) -> str:
+    scene_defs, _, scene, _ = spec["scene"]()
+    star_defs, star_body = starfield(
+        [(60, 60, 650, 470), (640, 140, 1250, 470), (60, 500, 1220, 590)], CARD_W, CARD_H, 150
+    )
+    head_defs, head_els = headline(*spec["headline"])
+    footer_y = 566
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {CARD_W} {CARD_H}" '
+        f'width="{CARD_W}" height="{CARD_H}" role="img" aria-labelledby="title desc">',
+        f'  <title id="title">{esc(spec["title"])}</title>',
+        f'  <desc id="desc">{esc(spec["desc"])}</desc>',
+        "",
+        "  <defs>",
+        "    <style>",
+        "      /* Inter and JetBrains Mono, SIL Open Font License 1.1, subset to the glyphs used "
+        "here. */",
+        "      __FONT_FACES__",
+        f"      {FONT_CSS}",
+        "      .cm{opacity:0}",
+        "    </style>",
+        *star_defs,
+        *mark_symbols(),
+        *head_defs,
+        *scene_defs,
+        "  </defs>",
+        "",
+        *star_body,
+        f'  <g transform="{CARD_SCENE}">{scene}</g>',
+        f'  <g transform="{CARD_COPY}">',
+        *lockup(),
+        *head_els,
+        *body(spec["body"]),
+        "  </g>",
+        f'  <path d="M72 {footer_y - 46}H1208" stroke="#1F2A44" stroke-width="1.5" />',
+        f'  <text class="mono" x="72" y="{footer_y}" font-size="21" letter-spacing="0.4" '
+        f'fill="{IRIS_2}">ghcr.io/netspeedy/odysseusai</text>',
+        f'  <text class="mono" x="1208" y="{footer_y}" text-anchor="end" font-size="17" '
+        f'letter-spacing="0.4" fill="{INK_3}">github.com/netspeedy/odysseusai</text>',
+        "</svg>",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_svg(path: Path, svg: str) -> None:
     svg = svg.replace("__FONT_FACES__", font_faces(svg))
     if "http://" in svg.replace("http://www.w3.org/2000/svg", "") or "https://" in svg:
-        raise SystemExit("external reference found in the hero SVG")
+        raise SystemExit(f"external reference found in {path.name}")
     ET.fromstring(svg)  # well-formed, or this raises
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(svg, encoding="utf-8")
-    print(f"Wrote {OUTPUT.relative_to(ROOT)} ({len(svg.encode()) / 1024:.1f} KiB)")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(svg, encoding="utf-8")
+    print(f"Wrote {path.relative_to(ROOT)} ({len(svg.encode()) / 1024:.1f} KiB)")
+
+
+def main() -> None:
+    write_svg(OUTPUT, build_svg())
+    write_svg(SOCIAL_OUTPUT, build_social_card())
 
 
 if __name__ == "__main__":
