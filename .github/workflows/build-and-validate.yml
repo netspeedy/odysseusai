@@ -81,7 +81,7 @@ jobs:
 
       # Upstream code runs in this environment, so nothing it touches is cached.
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: false
 
