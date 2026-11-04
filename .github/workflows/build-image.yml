@@ -14,10 +14,20 @@ on:
       - docker-compose.yml
   schedule:
     - cron: "17 4 * * *"
+    # Upstream's requirements.txt is mostly unpinned names, so pip takes whatever
+    # is current when that layer is built, and the layer cache then keeps it until
+    # the requirements or the base image change. Once a week both channels are
+    # rebuilt without the cache to pick up new dependency releases.
+    - cron: "17 5 * * 0"
   workflow_dispatch:
     inputs:
       force_build:
         description: Publish new stable and development images when inputs are unchanged
+        required: false
+        type: boolean
+        default: false
+      fresh_build:
+        description: Build without the layer cache, so dependencies resolve fresh
         required: false
         type: boolean
         default: false
@@ -37,7 +47,8 @@ env:
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
   PACKAGING_SCHEMA: "8"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
-  FORCE_BUILD: ${{ inputs.force_build || github.event.client_payload.force_build || github.event.client_payload.force || false }}
+  FRESH_BUILD: ${{ inputs.fresh_build || github.event.schedule == '17 5 * * 0' }}
+  FORCE_BUILD: ${{ inputs.force_build || inputs.fresh_build || github.event.schedule == '17 5 * * 0' || github.event.client_payload.force_build || github.event.client_payload.force || false }}
 
 jobs:
   publish:
@@ -175,6 +186,9 @@ jobs:
           annotations: ${{ steps.metadata.outputs.annotations }}
           provenance: false
           sbom: false
+          # A fresh build still writes the cache, so nightly builds after it reuse
+          # the newly resolved dependencies.
+          no-cache: ${{ env.FRESH_BUILD == 'true' }}
           cache-from: type=gha,scope=odysseus-${{ matrix.upstream_branch }}
           cache-to: type=gha,mode=max,scope=odysseus-${{ matrix.upstream_branch }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
