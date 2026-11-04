@@ -123,7 +123,7 @@ make test
 
 `.github/scripts/validate-bundle.sh` and `.github/scripts/smoke-test-searxng.sh` run the bundle checks locally with Docker. To try a sync, clone upstream next to this repository and run `.github/scripts/sync-upstream-runtime.sh ../odysseus .`.
 
-The banner at the top of this README is generated. Edit `scripts/readme/build_readme_hero.py` rather than the SVG, and rebuild it with `make readme-hero`, which needs network access to fetch and subset the fonts. The same script draws the repository's social preview card, and `make social-card` renders the PNG to upload in the repository settings.
+The banner at the top of this README is generated. Edit `scripts/readme/build_readme_hero.py` rather than the SVG, and rebuild it with `make readme-hero`. That runs the script with `uv`, which installs the pinned fontTools it subsets the fonts with, and the first run needs network access to download the fonts from assets.netspeedy.io. The same script draws the repository's social preview card, and `make social-card` renders the PNG to upload in the repository settings.
 
 ## License
 
