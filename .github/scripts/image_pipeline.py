@@ -743,6 +743,10 @@ def publish_stable_channel(args: argparse.Namespace) -> None:
     )
     if stable is None:
         raise RuntimeError("Stable image result is unavailable")
+    if stable.get("status") not in {"published", "current"}:
+        raise RuntimeError(
+            f"Stable image did not pass its gates (status {stable.get('status')!r})"
+        )
 
     image_name = os.environ["IMAGE_NAME"]
     description = os.environ["IMAGE_DESCRIPTION"]
