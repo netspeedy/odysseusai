@@ -26,7 +26,7 @@ temporary build context.
   `.github/scripts/tests/` (stdlib `unittest`). `image_pipeline.py` plans,
   promotes and verifies publications.
 - `make readme-hero` generates `assets/odysseusai-readme-hero.svg` and the
-  social preview, `assets/odysseusai-social-preview.png`, with
+  social card, `assets/odysseusai-social-card.png`, with
   `scripts/readme/build_readme_hero.py`. Edit the script, not the generated
   files. `measure_headline.py` is shared byte-for-byte with the other
   netspeedy repositories; leave it as it is.

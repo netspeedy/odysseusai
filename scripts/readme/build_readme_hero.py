@@ -12,7 +12,7 @@ as a course, from upstream main through the patch, image smoke test and Compose 
 GHCR. A comet runs the course and lights each waypoint, then the destination flares amber and
 the promoted tags appear above it.
 
-The same copy and chart also make assets/odysseusai-social-preview.png, the repository's
+The same copy and chart also make assets/odysseusai-social-card.png, the repository's
 1280x640 social preview, rendered with headless Chrome or Chromium (set CHROME if it isn't
 found). GitHub has no API for that image, so it's uploaded by hand in the repository settings.
 
@@ -46,7 +46,7 @@ from fontTools.ttLib import TTFont
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "assets" / "odysseusai-readme-hero.svg"
-PREVIEW_OUTPUT = ROOT / "assets" / "odysseusai-social-preview.png"
+SOCIAL_CARD = ROOT / "assets" / "odysseusai-social-card.png"
 # assets.netspeedy.io's Cloudflare zone turns away urllib's default user agent.
 USER_AGENT = "netspeedy-readme-hero"
 
@@ -818,7 +818,7 @@ def write_svg(path: Path, svg: str) -> None:
     print(f"Wrote {path.relative_to(ROOT)} ({len(svg.encode()) / 1024:.1f} KiB)")
 
 
-def write_social_preview(path: Path, svg: str) -> None:
+def write_social_card(path: Path, svg: str) -> None:
     svg = finish_svg(path.name, svg)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -830,7 +830,7 @@ def write_social_preview(path: Path, svg: str) -> None:
 
 def main() -> None:
     write_svg(OUTPUT, build_svg())
-    write_social_preview(PREVIEW_OUTPUT, build_social_card())
+    write_social_card(SOCIAL_CARD, build_social_card())
 
 
 if __name__ == "__main__":
