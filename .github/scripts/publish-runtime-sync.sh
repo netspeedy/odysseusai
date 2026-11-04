@@ -30,8 +30,8 @@ if git diff --cached --quiet -- "${runtime_files[@]}"; then
   exit 0
 fi
 
-git config user.name "github-actions[bot]"
-git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+git config user.name "${SYNC_AUTHOR_NAME:-Simon Oakes}"
+git config user.email "${SYNC_AUTHOR_EMAIL:-813389+soakes@users.noreply.github.com}"
 git commit -m "chore: sync deployment bundle with upstream ${upstream_short_sha}" -- "${runtime_files[@]}"
 git push origin HEAD:main
 
