@@ -69,7 +69,9 @@ temporary build context.
   `image_pipeline.py` and `retry` from `.github/scripts/lib/retry.sh`. A
   registry error must never be read as "tag not published".
 - Workflows declare least-privilege permissions per job; the repository default
-  token is read-only. Pin actions to major versions (`@v7`).
+  token is read-only. Pin actions to major versions (`@v7`). setup-uv
+  publishes no major tags, so it's pinned to its exact release and Dependabot
+  moves it.
 - Use Conventional Commit subjects. Bodies are prose that explain why and how
   the change was checked.
 
