@@ -1,15 +1,14 @@
 diff --git a/src/chat_helpers.py b/src/chat_helpers.py
+index 61d5db2..42abcc4 100644
 --- a/src/chat_helpers.py
 +++ b/src/chat_helpers.py
-@@ -75,6 +75,8 @@ def is_vision_model(model_name: str) -> bool:
-     drops the image entirely. See issue #124.
-     """
-     m = (model_name or "").lower()
-+    if "gpt-5" in m and "codex" not in m:
-+        return True
+@@ -84,4 +84,6 @@ def is_vision_model(model_name: str) -> bool:
      if any(kw in m for kw in _VISION_MODEL_KEYWORDS):
          return True
++    if "gpt-5" in m and "codex" not in m:
++        return True
      return bool(_VISION_VL_RE.search(m))
+ 
 diff --git a/tests/test_vision_model_detection.py b/tests/test_vision_model_detection.py
 --- a/tests/test_vision_model_detection.py
 +++ b/tests/test_vision_model_detection.py

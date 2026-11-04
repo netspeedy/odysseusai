@@ -1,17 +1,8 @@
 diff --git a/services/search/providers.py b/services/search/providers.py
+index 5a2d9a6..22fffd8 100644
 --- a/services/search/providers.py
 +++ b/services/search/providers.py
-@@ -129,7 +129,7 @@ _NEWS_HINTS = ("news", "nyheter", "headlines", "breaking", "latest", "today",
--# routinely rate-limited / CAPTCHA-blocked on this instance and return nothing.
-+# routinely rate-limited / CAPTCHA-blocked in container deployments.
- # Pin engines that actually respond so non-news queries get results without any
- # third-party API fallback. Override via SEARXNG_GENERAL_ENGINES.
--_GENERAL_ENGINES = os.environ.get("SEARXNG_GENERAL_ENGINES", "bing,mojeek,presearch")
-+_GENERAL_ENGINES = os.environ.get("SEARXNG_GENERAL_ENGINES", "bing,duckduckgo")
-
-
- def searxng_search_api(query: str, count: Optional[int] = None, categories: str = "general",
-@@ -138,7 +138,10 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
+@@ -184,7 +184,10 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
      count = count if count is not None else _get_result_count()
      instance = _get_search_instance()
      api_key = ""
@@ -23,27 +14,37 @@ diff --git a/services/search/providers.py b/services/search/providers.py
      if api_key:
          headers["Authorization"] = f"Bearer {api_key}"
      # News/fresh queries do badly in the 'general' category — it favours
-@@ -166,11 +169,12 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
-             # so there's enough volume; the news category already biases recent.
-             params["time_range"] = "week" if time_filter in ("day", "week") else time_filter
+@@ -225,17 +228,20 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
+         if time_filter in ("day", "week", "month", "year"):
+             params["time_range"] = time_filter
      else:
 -        params["categories"] = categories
+         # Freshness and source category are independent: current manuals,
+         # comparisons and documentation still belong in general search.
+         if time_filter in ("day", "week", "month", "year"):
+             params["time_range"] = time_filter
          # Route general queries to engines that aren't blocked (default general
-         # set returns 0 on this instance — see _GENERAL_ENGINES).
+-        # set returns 0 on this instance — see _GENERAL_ENGINES).
++        # set returns 0 on this instance — see _GENERAL_ENGINES). SearXNG adds
++        # every engine in a requested category to an explicit engine list, so
++        # pinned engines must be sent without categories.
          if categories == "general" and _GENERAL_ENGINES:
              params["engines"] = _GENERAL_ENGINES
 +        else:
 +            params["categories"] = categories
+     if engines:
+-        params["categories"] = "general"
++        params.pop("categories", None)
+         params["engines"] = engines
      try:
          def _parse_results(results):
-             return [
-@@ -204,11 +208,12 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
-                 "q": query,
-                 "format": "json",
-                 "language": "en",
--                "categories": "general",
-                 "safesearch": _safesearch_for("searxng"),
-             }
+@@ -270,9 +276,12 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
+             # Some self-hosted SearXNG configs have no working news engines.
+             # Fall back to the known-good general engines before reporting an
+             # empty search, otherwise common queries like "Canada news" fail.
+-            fallback = {**active_params, "categories": "general"}
++            fallback = dict(active_params)
++            fallback.pop("categories", None)
              if _GENERAL_ENGINES:
                  fallback["engines"] = _GENERAL_ENGINES
 +            else:
@@ -51,7 +52,7 @@ diff --git a/services/search/providers.py b/services/search/providers.py
              logger.info(
                  "SearXNG news search returned 0 results for %r; retrying general engines",
                  query,
-@@ -225,13 +230,10 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
+@@ -289,13 +298,10 @@ def searxng_search_api(query: str, count: Optional[int] = None, categories: str
              active_params = fallback
              parsed, data = _run(active_params)
          if not parsed and active_params.get("engines"):
@@ -66,7 +67,7 @@ diff --git a/services/search/providers.py b/services/search/providers.py
          logger.info(f"SearXNG JSON API returned {len(parsed)} results for: {query}")
          if not parsed:
              unresponsive = data.get("unresponsive_engines") if isinstance(data, dict) else None
-@@ -250,7 +252,10 @@ def searxng_search(query, max_results=10):
+@@ -314,7 +320,10 @@ def searxng_search(query, max_results=10, *, search_params=None):
      """Search using SearXNG instance - parsing HTML."""
      instance = _get_search_instance()
      api_key = ""
@@ -77,4 +78,17 @@ diff --git a/services/search/providers.py b/services/search/providers.py
 +    }
      if api_key:
          req_headers["Authorization"] = f"Bearer {api_key}"
-     try:
+     # Transport fallback must not change the user's retrieval constraints.
+diff --git a/tests/test_service_search_provider_guards.py b/tests/test_service_search_provider_guards.py
+index d7735ec..0bacbab 100644
+--- a/tests/test_service_search_provider_guards.py
++++ b/tests/test_service_search_provider_guards.py
+@@ -190,7 +190,7 @@ def test_service_searxng_latest_release_uses_general_search(monkeypatch, query,
+     )
+ 
+     assert results
+-    assert seen["params"]["categories"] == "general"
++    assert "categories" not in seen["params"]
+     assert seen["params"]["engines"] == providers._GENERAL_ENGINES
+     assert seen['params'].get('time_range') == expected_time
+ 
