@@ -38,10 +38,11 @@ temporary build context.
 - Build and Validate (`build-and-validate.yml`): pull requests, pushes to
   main and dispatch. Lints, unit tests, patches against upstream main and dev,
   and the bundle checks.
-- Automation Auto Merge merges Dependabot and bundle sync pull requests
-  once Build and Validate has passed for the head revision. Sync pull requests
-  are rebase-merged so the maintainer stays the commit author; a squash would
-  make `github-actions[bot]` the author. Dependabot pull requests are squashed.
+- Automation Auto Merge (04:05 UTC, and after Build and Validate) merges
+  Dependabot and bundle sync pull requests once Build and Validate has passed
+  for the head revision, ahead of the image run. Sync pull requests are
+  rebase-merged so the maintainer stays the commit author; a squash would make
+  `github-actions[bot]` the author. Dependabot pull requests are squashed.
 - Odysseus Container Pipeline (`build-image.yml`, 04:17 UTC and on pushes
   that touch the pipeline): builds main and dev candidates, pushes them by
   digest only, gates them with `smoke-test-image.sh` and `smoke-test-compose.sh`,

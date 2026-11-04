@@ -101,7 +101,7 @@ flowchart LR
   up[Upstream main and dev] --> sync[Sync Deployment Bundle<br/>03:41]
   sync -->|bundle changed| pr[Pull request]
   pr --> validate[Build and Validate]
-  validate -->|passed| merge[Automation Auto Merge]
+  validate -->|passed| merge[Automation Auto Merge<br/>04:05]
   merge --> images
   up --> images[Odysseus Container Pipeline<br/>04:17]
   images --> gates{Image smoke test<br/>then full stack and search}

@@ -4,9 +4,10 @@ on:
   workflow_dispatch:
   # Daily, after Sync Deployment Bundle (03:41). Its pull request is validated by
   # a dispatched Build and Validate run, and runs started with GITHUB_TOKEN don't
-  # fire workflow_run, so this sweep is what merges it.
+  # fire workflow_run, so this sweep is what merges it. It runs before the 04:17
+  # image run so a night's new image is tested against that night's bundle.
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "5 4 * * *"
   workflow_run:
     workflows:
       - Build and Validate
