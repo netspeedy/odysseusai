@@ -113,19 +113,25 @@ def render(results: list[dict[str, Any]]) -> str:
             "",
             "## Image Details",
             "",
-            "| Channel | Immutable tag | Moving tags | Upstream revision | Digest | Decision |",
-            "| --- | --- | --- | --- | --- | --- |",
+            "| Channel | Immutable tag | Moving tags | Upstream tags | Upstream revision "
+            "| Digest | Decision |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for result in results:
         upstream_sha = result.get("upstream_sha", "")
         commit_url = f"https://github.com/odysseus-dev/odysseus/commit/{upstream_sha}"
         moving_tags = ", ".join(code(tag) for tag in result.get("moving_tags", []))
+        upstream_tags = ", ".join(code(tag) for tag in result.get("upstream_tags", []))
         lines.append(
-            "| {channel} | {version} | {moving_tags} | {upstream} | {digest} | {reason} |".format(
+            (
+                "| {channel} | {version} | {moving_tags} | {upstream_tags} | {upstream} "
+                "| {digest} | {reason} |"
+            ).format(
                 channel=cell(result.get("channel", result.get("branch", "-"))),
                 version=code(result.get("version", "")),
                 moving_tags=moving_tags or "-",
+                upstream_tags=upstream_tags or "-",
                 upstream=link(upstream_sha[:12], commit_url) if upstream_sha else "-",
                 digest=code(short_digest(result.get("digest", ""))),
                 reason=cell(result.get("reason", "-")),
@@ -133,7 +139,7 @@ def render(results: list[dict[str, Any]]) -> str:
         )
 
     if not results:
-        lines.append("| - | - | - | - | - | No channel results were available |")
+        lines.append("| - | - | - | - | - | - | No channel results were available |")
 
     lines.extend(
         [

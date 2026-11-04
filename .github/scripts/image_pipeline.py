@@ -24,6 +24,8 @@ DEVELOPMENT_VERSION_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.[1-9]\d*-dev$")
 OCI_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
 REQUIREMENT_NAME_RE = re.compile(r"^([A-Za-z0-9_.-]+)")
+APP_VERSION_RE = re.compile(r'^.*"([^"]+)"')
+DOCKER_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 # How buildx reports a reference that does not exist, as opposed to a registry
 # or network failure that says nothing about whether it exists.
 MISSING_REFERENCE_RE = re.compile(r": not found$|MANIFEST_UNKNOWN|manifest unknown", re.M)
@@ -356,6 +358,50 @@ def valid_version(branch: str, version: str) -> bool:
     return bool(pattern.fullmatch(version))
 
 
+def app_version(source: Path) -> str:
+    """Return upstream's APP_VERSION as its own publish workflow reads it, or ''.
+
+    Upstream takes the first line of src/constants.py that starts with
+    APP_VERSION and the last double-quoted string on it.
+    """
+    constants = source / "src" / "constants.py"
+    lines = constants.read_text(encoding="utf-8").splitlines() if constants.is_file() else []
+    line = next((line for line in lines if line.startswith("APP_VERSION")), "")
+    match = APP_VERSION_RE.match(line)
+    version = match.group(1) if match else ""
+    if not DOCKER_TAG_RE.fullmatch(version):
+        return ""
+    # A version shaped like our CalVer would collide with the build tags.
+    if valid_version("main", version) or valid_version("dev", version):
+        return ""
+    return version
+
+
+def upstream_tags(branch: str, version: str, upstream_sha: str) -> tuple[str, str]:
+    """Return the moving version tag and immutable pin upstream publishes.
+
+    Upstream tags main as X.Y.Z and X.Y.Z-<sha7>, and dev as X.Y.Z-dev.<sha7>.
+    """
+    if not version:
+        return "", ""
+    short_sha = upstream_sha[:7]
+    if branch == "main":
+        return version, f"{version}-{short_sha}"
+    return "", f"{version}-dev.{short_sha}"
+
+
+def promoted_upstream_tags(
+    image_name: str, branch: str, version: str, upstream_sha: str, action: str
+) -> tuple[str, str]:
+    """Return the upstream tags a publication promotes, leaving a published pin alone."""
+    if action != "build":
+        return "", ""
+    version_tag, pin_tag = upstream_tags(branch, version, upstream_sha)
+    if pin_tag and inspect_image(f"{image_name}:{pin_tag}") is not None:
+        pin_tag = ""
+    return version_tag, pin_tag
+
+
 def decide_action(
     *,
     branch: str,
@@ -499,6 +545,17 @@ def plan(args: argparse.Namespace) -> None:
     else:
         version = current["labels"]["org.opencontainers.image.version"]
 
+    # Upstream's own tags, so a pin on its image works on ours. The pin is set
+    # by the first build of a commit and never moved, as upstream's isn't.
+    upstream_version = app_version(source)
+    if not upstream_version:
+        print("::warning::No usable APP_VERSION in upstream src/constants.py; "
+              "publishing without upstream's version tags")
+    version_tag, pin_tag = promoted_upstream_tags(
+        image_name, branch, upstream_version, upstream_sha, action
+    )
+    extra_tags = [tag for tag in (version_tag, pin_tag) if tag]
+
     base_images_value = ",".join(base_images)
     build_created = now.isoformat().replace("+00:00", "Z")
     result = {
@@ -516,6 +573,8 @@ def plan(args: argparse.Namespace) -> None:
         "reason": reason,
         "status": "planned",
         "upstream_sha": upstream_sha,
+        "upstream_tags": extra_tags,
+        "upstream_version": upstream_version,
         "version": version,
     }
     write_json(result_path, result)
@@ -526,11 +585,15 @@ def plan(args: argparse.Namespace) -> None:
             "base_images": base_images_value,
             "build_created": build_created,
             "reason": reason,
+            "upstream_pin": pin_tag,
             "upstream_sha": upstream_sha,
+            "upstream_version": upstream_version,
+            "upstream_version_tag": version_tag,
             "version": version,
         }
     )
-    print(f"{channel_name}: {action} {version} ({reason})")
+    tags_note = f" with {', '.join(extra_tags)}" if extra_tags else ""
+    print(f"{channel_name}: {action} {version}{tags_note} ({reason})")
 
 
 def require_equal(actual: Any, expected: Any, description: str) -> None:
@@ -555,6 +618,16 @@ def verify(args: argparse.Namespace) -> None:
     expected_version = os.environ["EXPECTED_VERSION"]
     base_fingerprint = os.environ["BASE_IMAGE_FINGERPRINT"]
     base_images = os.environ["BASE_IMAGES"]
+    upstream_version = os.environ.get("UPSTREAM_VERSION", "")
+    # Only the upstream tags this run promoted; both are empty on a skip.
+    upstream_tags_promoted = [
+        tag
+        for tag in (
+            os.environ.get("UPSTREAM_VERSION_TAG", ""),
+            os.environ.get("UPSTREAM_PIN", ""),
+        )
+        if tag
+    ]
     image_ref = f"{image_name}:{branch}"
 
     image = inspect_image(image_ref)
@@ -624,6 +697,11 @@ def verify(args: argparse.Namespace) -> None:
     require_equal(
         labels.get("io.netspeedy.odysseus.base-images"), base_images, "Base images"
     )
+    require_equal(
+        labels.get("io.netspeedy.odysseus.upstream-version", ""),
+        upstream_version,
+        "Upstream version",
+    )
 
     if not valid_version(branch, expected_version):
         raise RuntimeError(f"Invalid {branch} CalVer tag: {expected_version}")
@@ -641,6 +719,18 @@ def verify(args: argparse.Namespace) -> None:
         "Channel content",
     )
     version_digest = version_image["manifest"]["digest"]
+
+    for tag in upstream_tags_promoted:
+        tag_image = inspect_image(f"{image_name}:{tag}")
+        if tag_image is None:
+            raise RuntimeError(f"Upstream tag is unavailable: {tag}")
+        require_same_image_content(
+            tag_image,
+            inspect_raw_manifest(f"{image_name}:{tag}"),
+            version_image,
+            version_manifest,
+            f"Upstream tag {tag} content",
+        )
 
     if branch == "main":
         latest_image = inspect_image(f"{image_name}:latest")

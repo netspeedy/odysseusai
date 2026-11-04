@@ -15,6 +15,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 import image_pipeline  # noqa: E402
 from image_pipeline import (  # noqa: E402
     REGISTRY_ATTEMPTS,
+    app_version,
     apply_constraints,
     apply_patches,
     decide_action,
@@ -22,9 +23,11 @@ from image_pipeline import (  # noqa: E402
     image_content_digests,
     inspect_image,
     next_version,
+    promoted_upstream_tags,
     promotion_command,
     registry_output,
     stable_channel_command,
+    upstream_tags,
     valid_version,
 )
 
@@ -316,6 +319,64 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(
                 next_version("ghcr.io/netspeedy/odysseusai", "main", now), "2026.11.04.1"
             )
+
+
+class UpstreamTagTests(unittest.TestCase):
+    SHA = "9d0d3720f4ca181d87bef94da826d730acc6d483"
+
+    def app_version_from(self, constants: str | None) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            if constants is not None:
+                (source / "src").mkdir()
+                (source / "src" / "constants.py").write_text(constants, encoding="utf-8")
+            return app_version(source)
+
+    def test_app_version_is_read_like_upstreams_workflow(self):
+        self.assertEqual(
+            self.app_version_from('"""Constants."""\nAPP_VERSION = "1.0.3"\nAPP_NAME = "x"\n'),
+            "1.0.3",
+        )
+        # Upstream's sed keeps the last quoted string on the first APP_VERSION line.
+        self.assertEqual(
+            self.app_version_from('APP_VERSION = os.environ.get("V", "1.0.4")\n'), "1.0.4"
+        )
+        self.assertEqual(self.app_version_from('  APP_VERSION = "9.9.9"\n'), "")
+
+    def test_unusable_app_version_is_empty(self):
+        self.assertEqual(self.app_version_from(None), "")
+        self.assertEqual(self.app_version_from("APP_NAME = 'x'\n"), "")
+        self.assertEqual(self.app_version_from('APP_VERSION = "1.0 beta"\n'), "")
+        # A CalVer-shaped version would collide with the build tags.
+        self.assertEqual(self.app_version_from('APP_VERSION = "2026.11.04.1"\n'), "")
+
+    def test_upstream_tags_match_upstreams_scheme(self):
+        self.assertEqual(
+            upstream_tags("main", "1.0.3", self.SHA), ("1.0.3", "1.0.3-9d0d372")
+        )
+        self.assertEqual(upstream_tags("dev", "1.0.3", self.SHA), ("", "1.0.3-dev.9d0d372"))
+        self.assertEqual(upstream_tags("main", "", self.SHA), ("", ""))
+
+    @mock.patch.object(image_pipeline.time, "sleep")
+    def test_published_pin_is_never_moved(self, sleep):
+        del sleep
+        image = "ghcr.io/netspeedy/odysseusai"
+        with mock.patch.object(image_pipeline.subprocess, "run", return_value=MISSING):
+            self.assertEqual(
+                promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build"),
+                ("1.0.3", "1.0.3-9d0d372"),
+            )
+        with mock.patch.object(image_pipeline, "inspect_image", return_value={"labels": {}}):
+            self.assertEqual(
+                promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "build"),
+                ("1.0.3", ""),
+            )
+        with mock.patch.object(image_pipeline.subprocess, "run", return_value=OUTAGE):
+            with self.assertRaises(RuntimeError):
+                promoted_upstream_tags(image, "dev", "1.0.3", self.SHA, "build")
+        self.assertEqual(
+            promoted_upstream_tags(image, "main", "1.0.3", self.SHA, "skip"), ("", "")
+        )
 
 
 if __name__ == "__main__":

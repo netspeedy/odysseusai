@@ -45,7 +45,7 @@ concurrency:
 env:
   IMAGE_DESCRIPTION: Independent prebuilt container for Odysseus, built automatically from the official upstream source. This project publishes images and deployment files only.
   IMAGE_NAME: ghcr.io/netspeedy/odysseusai
-  PACKAGING_SCHEMA: "8"
+  PACKAGING_SCHEMA: "9"
   UPSTREAM_REPOSITORY: odysseus-dev/odysseus
   FRESH_BUILD: ${{ inputs.fresh_build || github.event.schedule == '17 5 * * 0' }}
   FORCE_BUILD: ${{ inputs.force_build || inputs.fresh_build || github.event.schedule == '17 5 * * 0' || github.event.client_payload.force_build || github.event.client_payload.force || false }}
@@ -143,6 +143,8 @@ jobs:
             type=raw,value=${{ matrix.upstream_branch }}
             type=raw,value=${{ steps.plan.outputs.version }}
             type=raw,value=latest,enable=${{ matrix.upstream_branch == 'main' }}
+            type=raw,value=${{ steps.plan.outputs.upstream_version_tag }},enable=${{ steps.plan.outputs.upstream_version_tag != '' }}
+            type=raw,value=${{ steps.plan.outputs.upstream_pin }},enable=${{ steps.plan.outputs.upstream_pin != '' }}
           labels: |
             org.opencontainers.image.title=Odysseus AI
             org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
@@ -162,6 +164,7 @@ jobs:
             io.netspeedy.odysseus.packaging-patch-fingerprint=${{ steps.packaging.outputs.patch_fingerprint }}
             io.netspeedy.odysseus.base-image-fingerprint=${{ steps.plan.outputs.base_fingerprint }}
             io.netspeedy.odysseus.base-images=${{ steps.plan.outputs.base_images }}
+            io.netspeedy.odysseus.upstream-version=${{ steps.plan.outputs.upstream_version }}
           annotations: |
             org.opencontainers.image.title=Odysseus AI
             org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
@@ -243,7 +246,10 @@ jobs:
           PACKAGING_PATCHES: ${{ steps.packaging.outputs.patches }}
           PACKAGING_PATCH_FINGERPRINT: ${{ steps.packaging.outputs.patch_fingerprint }}
           UPSTREAM_BRANCH: ${{ matrix.upstream_branch }}
+          UPSTREAM_PIN: ${{ steps.plan.outputs.upstream_pin }}
           UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+          UPSTREAM_VERSION: ${{ steps.plan.outputs.upstream_version }}
+          UPSTREAM_VERSION_TAG: ${{ steps.plan.outputs.upstream_version_tag }}
         run: >-
           python3 .github/scripts/image_pipeline.py verify
           --result build-results/${{ matrix.upstream_branch }}.json
