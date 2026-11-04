@@ -173,6 +173,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      # The Compose smoke override runs the Odysseus service on this platform.
+      ODYSSEUS_TEST_PLATFORM: ${{ matrix.platform.name }}
     strategy:
       fail-fast: false
       matrix:
