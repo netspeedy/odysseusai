@@ -1,8 +1,11 @@
 services:
   odysseus:
+    # Prebuilt by netspeedy/odysseusai from upstream Odysseus and smoke-tested
+    # with this Compose file before it is tagged. Choose a channel or pin a
+    # CalVer build with ODYSSEUS_IMAGE_TAG in .env.
     image: ghcr.io/netspeedy/odysseusai:${ODYSSEUS_IMAGE_TAG:-latest}
     ports:
-      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000"
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-7011}:7000"
     volumes:
       - ${APP_DATA_DIR:-./data}:/app/data:z
       - ${APP_LOGS_DIR:-./logs}:/app/logs:z
@@ -35,10 +38,11 @@ services:
       - DATABASE_URL=${DATABASE_URL:-sqlite:///./data/app.db}
       - AUTH_ENABLED=${AUTH_ENABLED:-true}
       - LOCALHOST_BYPASS=${LOCALHOST_BYPASS:-false}
+      - COMPANION_BASE_URL=${COMPANION_BASE_URL:-}
       - ODYSSEUS_ADMIN_USER=${ODYSSEUS_ADMIN_USER:-admin}
       - ODYSSEUS_ADMIN_PASSWORD=${ODYSSEUS_ADMIN_PASSWORD:-}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}
-      - SECURE_COOKIES=${SECURE_COOKIES:-false}
+      - SECURE_COOKIES=${SECURE_COOKIES:-}
       - EMBEDDING_URL=${EMBEDDING_URL:-}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
@@ -47,6 +51,10 @@ services:
       - CLEANUP_INTERVAL_HOURS=${CLEANUP_INTERVAL_HOURS:-24}
       - ODYSSEUS_INPROCESS_POLLERS=${ODYSSEUS_INPROCESS_POLLERS:-1}
       - ODYSSEUS_INPROCESS_TASKS=${ODYSSEUS_INPROCESS_TASKS:-1}
+      - ODYSSEUS_QWEN_NATIVE_COMPACT_BUILTINS=${ODYSSEUS_QWEN_NATIVE_COMPACT_BUILTINS:-1}
+      - ODYSSEUS_QWEN_SUPPRESS_LOCAL_CONTEXT=${ODYSSEUS_QWEN_SUPPRESS_LOCAL_CONTEXT:-0}
+      - ODYSSEUS_CAPTURE_MODEL_REQUESTS=${ODYSSEUS_CAPTURE_MODEL_REQUESTS:-0}
+      - ODYSSEUS_MCP_EMAIL_OWNER=${ODYSSEUS_MCP_EMAIL_OWNER:-}
       - ODYSSEUS_SCRIPT_HOST=${ODYSSEUS_SCRIPT_HOST:-localhost}
       - ODYSSEUS_CHAT_UPLOAD_MAX_BYTES=${ODYSSEUS_CHAT_UPLOAD_MAX_BYTES:-10485760}
       - ODYSSEUS_GALLERY_UPLOAD_MAX_BYTES=${ODYSSEUS_GALLERY_UPLOAD_MAX_BYTES:-104857600}
@@ -54,14 +62,27 @@ services:
       - ODYSSEUS_MEMORY_IMPORT_MAX_BYTES=${ODYSSEUS_MEMORY_IMPORT_MAX_BYTES:-10485760}
       - ODYSSEUS_PERSONAL_UPLOAD_MAX_BYTES=${ODYSSEUS_PERSONAL_UPLOAD_MAX_BYTES:-26214400}
       - ODYSSEUS_EMAIL_COMPOSE_UPLOAD_MAX_BYTES=${ODYSSEUS_EMAIL_COMPOSE_UPLOAD_MAX_BYTES:-26214400}
+      - ODYSSEUS_EDITOR_DRAFT_MAX_BYTES=${ODYSSEUS_EDITOR_DRAFT_MAX_BYTES:-268435456}
       - ODYSSEUS_STT_MAX_AUDIO_BYTES=${ODYSSEUS_STT_MAX_AUDIO_BYTES:-26214400}
       - ODYSSEUS_ICS_MAX_BYTES=${ODYSSEUS_ICS_MAX_BYTES:-10485760}
+      - ODYSSEUS_TTS_CACHE_MAX_BYTES=${ODYSSEUS_TTS_CACHE_MAX_BYTES}
+      # Host workspace translation is opt-in. Keep the public compose file
+      # user-neutral; configure these in a local .env or use the host-workspace
+      # overlay with ODYSSEUS_HOST_WORKSPACE_DIR.
+      - ODYSSEUS_WORKSPACE_HOST_ROOT=${ODYSSEUS_WORKSPACE_HOST_ROOT:-}
+      - ODYSSEUS_WORKSPACE_CONTAINER_ROOT=${ODYSSEUS_WORKSPACE_CONTAINER_ROOT:-/workspace}
+      - ODYSSEUS_WORKSPACE_DEFAULT=${ODYSSEUS_WORKSPACE_DEFAULT:-}
       - DATA_BRAVE_API_KEY=${DATA_BRAVE_API_KEY:-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GOOGLE_PSE_CX=${GOOGLE_PSE_CX:-}
       - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID:-}
       - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET:-}
       - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-}
+      # Externally reachable origin for MCP OAuth callbacks. The container
+      # always listens on 7000 and cannot see the host port map above, so
+      # remote MCP OAuth needs this set whenever the browser reaches
+      # Odysseus on anything other than http://localhost:7000.
+      - OAUTH_REDIRECT_BASE_URL=${OAUTH_REDIRECT_BASE_URL:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - SERPER_API_KEY=${SERPER_API_KEY:-}
       # PUID / PGID — the user/group the container drops to before
@@ -82,19 +103,23 @@ services:
     restart: unless-stopped
 
   chromadb:
-    image: docker.io/chromadb/chroma:latest
+    image: docker.io/chromadb/chroma:1.5.9@sha256:1e0b73a187a28757c572acba508c46f48c9e8b0acaf5c20e6d95cdedce1acdf6
     ports:
       - "${CHROMADB_BIND:-127.0.0.1}:8100:8000"
     volumes:
-      - chromadb-data:/chroma/chroma
+      # The image runs `chroma run /config.yaml`, whose persist_path is "/data".
+      # It declares no VOLUME, so anything written outside a mount lives in the
+      # container's writable layer and dies with it. /chroma/chroma is where
+      # pre-1.0 images kept the store; mounting there now catches nothing.
+      - chromadb-data:/data
     environment:
       - ANONYMIZED_TELEMETRY=FALSE
     restart: unless-stopped
 
   searxng:
-    # Automation resolves upstream latest to a readable tag plus immutable
-    # digest, then tests this exact image before publishing the bundle.
-    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.8.29-d226b78bc@sha256:b36af7984b87191b595bc5301418ed6432c047668a4547ab531a7439b816fac3}
+    # Upstream pin, smoke-tested again by netspeedy/odysseusai before the
+    # bundle is published. Override with SEARXNG_IMAGE in .env.
+    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.10.24-ef0ec03da@sha256:7c7cbe509429e82755104b2a95f52085a98633c95d53f44e4e905fa3a59f08c8}
     entrypoint:
       - /bin/sh
       - -c
@@ -111,6 +136,10 @@ services:
           fi
           sed "s|__SEARXNG_SECRET__|$$secret|g" /tmp/searxng-settings.yml.template > /etc/searxng/settings.yml
         fi
+        # Advisory: a settings file the migration cannot parse or rewrite must
+        # not be what stops searxng from booting. It explains itself on stderr
+        # and we carry on, letting searxng report anything genuinely wrong.
+        /usr/local/searxng/.venv/bin/python /tmp/migrate-searxng-settings.py /etc/searxng/settings.yml || true
         cp /tmp/searxng-limiter.toml.template /etc/searxng/limiter.toml
         exec /usr/local/searxng/entrypoint.sh
     ports:
@@ -119,6 +148,7 @@ services:
       - searxng-data:/etc/searxng
       - ./config/searxng/settings.yml:/tmp/searxng-settings.yml.template:ro,z
       - ./config/searxng/limiter.toml:/tmp/searxng-limiter.toml.template:ro,z
+      - ./scripts/migrate_searxng_settings.py:/tmp/migrate-searxng-settings.py:ro,z
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080/
       - SEARXNG_SECRET=${SEARXNG_SECRET:-}
@@ -145,7 +175,7 @@ services:
     restart: unless-stopped
 
   ntfy:
-    image: docker.io/binwiederhier/ntfy
+    image: docker.io/binwiederhier/ntfy:v2.32.0@sha256:59250e1d8be2ee2186c4560322f625faef22ace380331f05b63f8842dbd62602
     command: serve
     ports:
       - "${NTFY_BIND:-127.0.0.1}:8091:80"
