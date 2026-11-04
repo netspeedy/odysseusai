@@ -86,13 +86,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
+      # The package is public, so planning reads the registry anonymously. The
+      # login comes after upstream's tests, so upstream code never runs next to
+      # a registry credential.
       - name: Plan image publication
         id: plan
         env:
@@ -107,6 +103,24 @@ jobs:
           python3 .github/scripts/image_pipeline.py plan
           --source upstream
           --result build-results/${{ matrix.upstream_branch }}.json
+
+      # Upstream code runs in this environment, so nothing it touches is cached.
+      - name: Set up uv
+        if: steps.plan.outputs.action == 'build'
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: false
+
+      - name: Run upstream tests for the patched code
+        if: steps.plan.outputs.action == 'build'
+        run: .github/scripts/test-upstream.sh upstream
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate image metadata
         if: steps.plan.outputs.action == 'build'

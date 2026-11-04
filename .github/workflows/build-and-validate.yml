@@ -44,9 +44,9 @@ jobs:
         run: python3 -m unittest discover -s .github/scripts/tests
 
   patches:
-    name: Packaging Applies to Upstream ${{ matrix.upstream_branch }}
+    name: Packaging on Upstream ${{ matrix.upstream_branch }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -54,8 +54,9 @@ jobs:
           - main
           - dev
 
-    # Catches upstream drift before the nightly image run does: every patch
-    # and constraint has to apply cleanly to the current upstream branch.
+    # Every patch and constraint has to apply cleanly to the current upstream
+    # branch, and upstream's tests for the patched code have to pass with them.
+    # The image pipeline repeats both before it builds.
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -77,6 +78,15 @@ jobs:
           --source upstream
           --constraints .github/constraints/requirements.txt
           --patches .github/patches
+
+      # Upstream code runs in this environment, so nothing it touches is cached.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: false
+
+      - name: Run upstream tests for the patched code
+        run: .github/scripts/test-upstream.sh upstream
 
   bundle:
     name: Deployment Bundle
