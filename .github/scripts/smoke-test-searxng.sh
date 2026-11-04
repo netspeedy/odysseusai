@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# shellcheck source=SCRIPTDIR/lib/retry.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/retry.sh"
+
 compose_file="${1:-docker-compose.yml}"
 override_file="${2:-.github/compose/smoke-test.yml}"
 project_name="odysseus-searxng-smoke-${GITHUB_RUN_ID:-local}-${RANDOM}"
@@ -36,7 +39,8 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${APP_DATA_DIR}" "${APP_LOGS_DIR}"
-"${compose[@]}" run --rm --no-deps --pull always --user root \
+retry 4 "${compose[@]}" pull --quiet searxng
+"${compose[@]}" run --rm --no-deps --pull missing --user root \
   --entrypoint /bin/sh searxng -c '
 cat > /etc/searxng/settings.yml <<"EOF"
 use_default_settings: true
