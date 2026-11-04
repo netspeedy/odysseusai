@@ -52,8 +52,8 @@ temporary build context.
   that touch the pipeline): for each channel that needs a build, runs
   upstream's tests for the patched code with `test-upstream.sh`, builds the
   candidate, pushes it by digest only, gates it with `smoke-test-image.sh` and
-  `smoke-test-compose.sh`, and only then promotes it to its channel and CalVer
-  tags and verifies the published labels. A failed candidate is deleted.
+  `smoke-test-compose.sh`, and only then promotes it to its channel, CalVer and
+  upstream tags and verifies the published labels. A failed candidate is deleted.
   Planning reads GHCR anonymously and the registry login comes after the
   upstream tests; keep it there, so upstream code never runs next to a
   registry credential. At 05:17 UTC on Sundays both channels are rebuilt
@@ -88,6 +88,12 @@ temporary build context.
   for that reason. The exception is the README hero generator's PEP 723
   pins, which keep rebuilds byte-identical, are shared with the other
   netspeedy repositories and ship nothing.
+- Publish the tags upstream publishes. Upstream tags main `X.Y.Z` and
+  `X.Y.Z-<sha7>` and dev `X.Y.Z-dev.<sha7>`, from `APP_VERSION` in
+  `src/constants.py`; `app_version` and `upstream_tags` in `image_pipeline.py`
+  mirror its docker-publish workflow, so change them when upstream changes
+  that. The commit pins are immutable upstream, so a pin is promoted only by
+  the first build of its commit. CalVer and `main` are ours, in addition.
 - Use Conventional Commit subjects. Bodies are prose that explain why and how
   the change was checked.
 

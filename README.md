@@ -13,7 +13,7 @@
 
 ---
 
-This repository publishes container images of [Odysseus](https://odysseus-dev.github.io/odysseus), the self-hosted AI workspace, together with the Compose files that run them. Upstream publishes images of its own these days. These are built from the same source with a couple of packaging fixes applied, so web search works properly in a container deployment and GPT-5 models keep image attachments. You also get immutable CalVer tags to pin, and every tag has booted the complete stack and answered a real search before it was published.
+This repository publishes container images of [Odysseus](https://odysseus-dev.github.io/odysseus), the self-hosted AI workspace, together with the Compose files that run them. Upstream publishes images of its own these days. These are built from the same source with a couple of packaging fixes applied, so web search works properly in a container deployment and GPT-5 models keep image attachments. The tags match upstream's, so `1.0.3` or `1.0.3-9d0d372` on upstream's image means the same release here, and every build also gets an immutable CalVer tag. Every tag has booted the complete stack and answered a real search before it was published.
 
 Each night the pipeline checks upstream `main` and `dev` and rebuilds whichever has moved, or whose base image has, and once a week it rebuilds both from scratch so new releases of upstream's Python dependencies get in. A candidate image is smoke-tested on its own, then started with ChromaDB, SearXNG and ntfy and made to answer a SearXNG query through the Odysseus API. Only then do any tags point at it. Upstream changes to the Compose files come in as a pull request that is validated before it merges. This is an independent packaging project, not maintained by or affiliated with the Odysseus project. Application bugs and features belong [upstream](https://github.com/odysseus-dev/odysseus); image and bundle problems belong here.
 
@@ -60,7 +60,7 @@ docker buildx imagetools inspect ghcr.io/netspeedy/odysseusai:latest \
 2026.11.04.1 9d0d3720f4ca181d87bef94da826d730acc6d483
 ```
 
-The `io.netspeedy.odysseus.*` labels go further: the packaging patches and dependency pins applied to that build, their fingerprints, and the digest of the Python base image.
+The `io.netspeedy.odysseus.*` labels go further: upstream's version, the packaging patches and dependency pins applied to that build, their fingerprints, and the digest of the Python base image.
 
 ## Image tags
 
@@ -68,10 +68,13 @@ The `io.netspeedy.odysseus.*` labels go further: the packaging patches and depen
 | --- | --- | --- |
 | `latest`, `main` | upstream `main` | The stable channel, and what the Compose file uses by default |
 | `dev` | upstream `dev` | The newest upstream changes, gated the same way |
+| `X.Y.Z` | upstream `main` | Following one upstream release, such as `1.0.3`; moves to each new build of it |
+| `X.Y.Z-<sha>` | one upstream `main` commit | Pinning an upstream commit, such as `1.0.3-9d0d372`; set by its first build and never moved |
+| `X.Y.Z-dev.<sha>` | one upstream `dev` commit | Pinning a development commit; set by its first build and never moved |
 | `YYYY.MM.DD.N` | upstream `main` | Pinning one stable build |
 | `YYYY.MM.DD.N-dev` | upstream `dev` | Pinning one development build |
 
-The date is the UTC day the image was published, and `N` counts up from 1 when more than one image goes out that day. To follow `dev` or pin a build, set `ODYSSEUS_IMAGE_TAG` in `.env`. Images are `linux/amd64` only for now.
+The `X.Y.Z` tags are the ones upstream puts on its own image, built from its `APP_VERSION` and the first seven characters of the commit, so you can switch registries without changing the tag. We rebuild the same commit when its base image or packaging changes and once a week for dependency updates, so the commit pin keeps upstream's meaning and stays on the first build, while `X.Y.Z`, the channel tags and CalVer move on. For CalVer tags, the date is the UTC day the image was published, and `N` counts up from 1 when more than one image goes out that day. To follow `dev`, a release or a pin, set `ODYSSEUS_IMAGE_TAG` in `.env`. Upstream's images are multi-arch; these are `linux/amd64` only for now, so the matching tags don't help on arm64 yet.
 
 ## Updating
 
@@ -80,7 +83,7 @@ docker compose pull
 docker compose up -d --force-recreate
 ```
 
-`latest`, `main` and `dev` always point at the newest image that passed its gates, so a pull is all an image update needs. If you deployed from a clone, `git pull` first to pick up upstream's changes to the Compose files. Upstream moved the default host port from 7000 to 7011 in September 2026, so set `APP_PORT=7000` in `.env` if you want to keep the old address.
+`latest`, `main`, `dev` and `X.Y.Z` always point at the newest image that passed its gates, so a pull is all an image update needs. If you deployed from a clone, `git pull` first to pick up upstream's changes to the Compose files. Upstream moved the default host port from 7000 to 7011 in September 2026, so set `APP_PORT=7000` in `.env` if you want to keep the old address.
 
 ## What the packaging changes
 
@@ -106,7 +109,7 @@ flowchart LR
   merge --> images
   up --> images[Odysseus Container Pipeline<br/>04:17]
   images --> gates{Upstream tests, image smoke test<br/>then full stack and search}
-  gates -->|passed| tags[latest, main, dev<br/>and a CalVer tag]
+  gates -->|passed| tags[latest, main, dev, upstream's<br/>version tags and a CalVer tag]
   gates -->|failed| drop[Candidate deleted]
 ```
 
