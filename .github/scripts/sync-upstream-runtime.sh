@@ -5,20 +5,10 @@ set -euo pipefail
 upstream_dir="${1:-upstream}"
 target_dir="${2:-.}"
 
-required_files=(
-  ".env.example"
-  "LICENSE"
-  "docker-compose.yml"
-  "config/searxng/settings.yml"
-  "docker/gpu.amd.yml"
-  "docker/gpu.nvidia.yml"
-  "docker/host-docker.yml"
-  "docker/host-network.yml"
-  "docker/host-workspace.yml"
-  "scripts/migrate_searxng_settings.py"
-)
+# shellcheck source=SCRIPTDIR/lib/bundle.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/bundle.sh"
 
-for relative_path in "${required_files[@]}"; do
+for relative_path in "${bundle_files[@]}"; do
   if [ ! -f "${upstream_dir}/${relative_path}" ]; then
     echo "Missing upstream runtime file: ${relative_path}" >&2
     exit 1
