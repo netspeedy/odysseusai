@@ -9,7 +9,7 @@ test:
 
 # Writes the README hero and the social card SVG.
 readme-hero:
-	$(PYTHON) $(HERO)/build_readme_hero.py
+	uv run $(HERO)/build_readme_hero.py
 
 # GitHub's social preview takes a PNG, so render the card in headless Chrome,
 # which honours the embedded fonts. Upload it in Settings > Social preview.

@@ -6,6 +6,3 @@ logs/
 /upstream/
 __pycache__/
 *.py[cod]
-
-# Cached by scripts/readme/measure_headline.py
-scripts/readme/inter-latin.ttf
