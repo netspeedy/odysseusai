@@ -1,0 +1,129 @@
+name: Sync Deployment Bundle
+
+on:
+  # Before the nightly image run (04:17) and the Automation Auto Merge sweep (05:00).
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types:
+      - upstream-updated
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-deployment-bundle
+  cancel-in-progress: true
+
+env:
+  SYNC_BRANCH: automation/sync-deployment-bundle
+  UPSTREAM_REPOSITORY: odysseus-dev/odysseus
+
+jobs:
+  sync:
+    name: Sync Deployment Bundle
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      changed: ${{ steps.describe.outputs.changed }}
+      title: ${{ steps.describe.outputs.title }}
+
+    # This job runs upstream-authored Compose configuration, so it holds no
+    # write credentials. It hands the changed files to the next job instead.
+    steps:
+      - name: Checkout deployment repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          path: packaging
+          persist-credentials: false
+
+      - name: Checkout upstream main
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: main
+          fetch-depth: 1
+          path: upstream
+          persist-credentials: false
+
+      - name: Synchronize upstream runtime files
+        working-directory: packaging
+        run: .github/scripts/sync-upstream-runtime.sh ../upstream .
+
+      - name: Validate deployment bundle
+        working-directory: packaging
+        run: .github/scripts/validate-bundle.sh
+
+      - name: Smoke test synchronized SearXNG
+        working-directory: packaging
+        run: .github/scripts/smoke-test-searxng.sh
+
+      - name: Describe bundle changes
+        id: describe
+        working-directory: packaging
+        run: .github/scripts/describe-bundle-sync.sh ../upstream ../bundle
+
+      - name: Upload synchronized bundle
+        if: steps.describe.outputs.changed == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: deployment-bundle
+          path: bundle/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  propose:
+    name: Open Bundle Pull Request
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+
+    # Runs no upstream code: it copies the allowlisted bundle files and opens or
+    # updates one pull request, authored as the maintainer so the rebase merge
+    # keeps a person, not a bot, in the history.
+    steps:
+      - name: Checkout deployment repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download synchronized bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: deployment-bundle
+          path: ${{ runner.temp }}/bundle
+
+      - name: Apply synchronized bundle
+        run: .github/scripts/apply-bundle-sync.sh "${RUNNER_TEMP}/bundle"
+
+      - name: Create pull request
+        id: pr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: ${{ env.SYNC_BRANCH }}
+          author: Simon Oakes <813389+soakes@users.noreply.github.com>
+          committer: Simon Oakes <813389+soakes@users.noreply.github.com>
+          commit-message: ${{ needs.sync.outputs.title }}
+          title: ${{ needs.sync.outputs.title }}
+          body-path: ${{ runner.temp }}/bundle/pull-request.md
+          delete-branch: true
+
+      # A pull request opened with GITHUB_TOKEN doesn't trigger pull_request
+      # workflows, so Build and Validate is dispatched on the branch instead.
+      # That run doesn't fire workflow_run either; the 05:00 Automation Auto
+      # Merge sweep merges the pull request once it has passed.
+      - name: Validate the pull request
+        if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run build-and-validate.yml --ref "${SYNC_BRANCH}"

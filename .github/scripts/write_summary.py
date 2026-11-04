@@ -65,23 +65,13 @@ def link(label: str, url: str) -> str:
     return f"[{cell(label)}]({url})"
 
 
-def deployment_row() -> tuple[str, str, str]:
-    """Return deployment synchronization summary values."""
-    sync_result = os.environ.get("SYNC_RESULT", "unknown")
-    changed = os.environ.get("SYNC_CHANGED", "false") == "true"
-    upstream_sha = os.environ.get("SYNC_UPSTREAM_SHA", "")
-    if sync_result == "success":
-        status = "Updated" if changed else "Current"
-    elif sync_result == "cancelled":
-        status = "Cancelled"
-    else:
-        status = "Failed"
-
-    detail = "Upstream main"
-    if upstream_sha:
-        commit_url = f"https://github.com/odysseus-dev/odysseus/commit/{upstream_sha}"
-        detail = f"Upstream main at {link(upstream_sha[:12], commit_url)}"
-    return "Deployment bundle", status, detail
+def landing_label(result: str) -> str:
+    """Return the state of the stable package landing version."""
+    return {
+        "success": "Published",
+        "skipped": "Skipped",
+        "cancelled": "Cancelled",
+    }.get(result, "Failed")
 
 
 def render(results: list[dict[str, Any]]) -> str:
@@ -97,13 +87,12 @@ def render(results: list[dict[str, Any]]) -> str:
     lines = [
         "# Odysseus Container Pipeline",
         "",
-        "Automated images built from the official Odysseus source and published by this independent packaging project.",
+        "Automated images built from the official Odysseus source and published by this "
+        "independent packaging project.",
         "",
         "| Component | Result | Detail |",
         "| --- | --- | --- |",
     ]
-    component, status, detail = deployment_row()
-    lines.append(f"| {component} | {status} | {detail} |")
 
     for result in results:
         channel = f"{result.get('channel', result.get('branch', 'Image'))} image"
@@ -116,6 +105,8 @@ def render(results: list[dict[str, Any]]) -> str:
     if not results:
         fallback = "Failed" if build_result != "success" else "No result artifacts"
         lines.append(f"| Image publishing | {fallback} | - |")
+    landing = landing_label(os.environ.get("LANDING_RESULT", "unknown"))
+    lines.append(f"| Stable package landing version | {landing} | `latest`, `main` |")
 
     lines.extend(
         [

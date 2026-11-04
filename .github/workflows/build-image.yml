@@ -26,7 +26,6 @@ on:
       - upstream-updated
 
 permissions:
-  actions: read
   contents: read
 
 concurrency:
@@ -41,58 +40,11 @@ env:
   FORCE_BUILD: ${{ inputs.force_build || github.event.client_payload.force_build || github.event.client_payload.force || false }}
 
 jobs:
-  sync_deployment:
-    name: Sync Deployment Bundle
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: write
-    outputs:
-      changed: ${{ steps.publish.outputs.changed }}
-      packaging_sha: ${{ steps.publish.outputs.packaging_sha }}
-      upstream_sha: ${{ steps.publish.outputs.upstream_sha }}
-
-    steps:
-      - name: Checkout deployment repository
-        uses: actions/checkout@v7.0.1
-        with:
-          ref: main
-          fetch-depth: 0
-          path: packaging
-
-      - name: Checkout upstream stable source
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: ${{ env.UPSTREAM_REPOSITORY }}
-          ref: main
-          fetch-depth: 1
-          persist-credentials: false
-          path: upstream
-
-      - name: Synchronize upstream runtime files
-        working-directory: packaging
-        run: .github/scripts/sync-upstream-runtime.sh ../upstream .
-
-      - name: Validate deployment bundle
-        working-directory: packaging
-        run: .github/scripts/validate-bundle.sh
-
-      - name: Smoke test synchronized SearXNG
-        working-directory: packaging
-        run: .github/scripts/smoke-test-searxng.sh
-
-      - name: Publish deployment bundle changes
-        id: publish
-        working-directory: packaging
-        run: .github/scripts/publish-runtime-sync.sh ../upstream
-
   publish:
     name: ${{ matrix.job_name }}
-    needs: sync_deployment
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
-      actions: read
       contents: read
       packages: write
     strategy:
@@ -110,13 +62,12 @@ jobs:
 
     steps:
       - name: Checkout pipeline source
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v7
         with:
-          ref: ${{ needs.sync_deployment.outputs.packaging_sha }}
           persist-credentials: false
 
       - name: Checkout upstream source
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.UPSTREAM_REPOSITORY }}
           ref: ${{ matrix.upstream_branch }}
@@ -133,10 +84,10 @@ jobs:
           --patches .github/patches
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.2.0
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4.6.0
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -160,7 +111,7 @@ jobs:
       - name: Generate image metadata
         if: steps.plan.outputs.action == 'build'
         id: metadata
-        uses: docker/metadata-action@v6.2.0
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
@@ -200,7 +151,7 @@ jobs:
       - name: Build candidate image
         if: steps.plan.outputs.action == 'build'
         id: build
-        uses: docker/build-push-action@v7.3.0
+        uses: docker/build-push-action@v7
         with:
           context: upstream
           platforms: linux/amd64
@@ -271,7 +222,7 @@ jobs:
 
       - name: Upload channel result
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: image-result-${{ matrix.upstream_branch }}
           path: build-results/${{ matrix.upstream_branch }}.json
@@ -282,14 +233,11 @@ jobs:
     name: Publish Stable Package Landing Version
     # A failed development leg must not hold back a stable image that passed.
     # The step itself refuses to run unless the stable leg published or was current.
-    if: ${{ always() && needs.sync_deployment.result == 'success' }}
-    needs:
-      - sync_deployment
-      - publish
+    if: ${{ !cancelled() }}
+    needs: publish
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      actions: read
       contents: read
       packages: write
     outputs:
@@ -297,23 +245,22 @@ jobs:
 
     steps:
       - name: Checkout pipeline source
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v7
         with:
-          ref: ${{ needs.sync_deployment.outputs.packaging_sha }}
           persist-credentials: false
 
       - name: Download image results
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@v8
         with:
           pattern: image-result-*
           path: build-results
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.2.0
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4.6.0
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -331,24 +278,22 @@ jobs:
     name: Run Summary
     if: ${{ always() }}
     needs:
-      - sync_deployment
       - publish
       - publish_stable_channel
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      actions: read
       contents: read
 
     steps:
       - name: Checkout pipeline source
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Download image results
         continue-on-error: true
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@v8
         with:
           pattern: image-result-*
           path: build-results
@@ -357,7 +302,5 @@ jobs:
       - name: Write run summary
         env:
           BUILD_RESULT: ${{ needs.publish.result }}
-          SYNC_CHANGED: ${{ needs.sync_deployment.outputs.changed }}
-          SYNC_RESULT: ${{ needs.sync_deployment.result }}
-          SYNC_UPSTREAM_SHA: ${{ needs.sync_deployment.outputs.upstream_sha }}
+          LANDING_RESULT: ${{ needs.publish_stable_channel.result }}
         run: python3 .github/scripts/write_summary.py --results build-results
