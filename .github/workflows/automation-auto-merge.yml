@@ -181,7 +181,7 @@ jobs:
                 merge_method=(--squash --subject "${title}" --body "Automatically merged after Build and Validate passed. Original pull request: ${url}")
                 ;;
               github-actions\[bot\] | github-actions | app/github-actions)
-                # The bundle sync commit is authored as the maintainer. A rebase
+                # The bundle sync commit is authored as netspeedybot. A rebase
                 # keeps it; a squash would make the bot that opened the pull
                 # request its author.
                 merge_method=(--rebase)

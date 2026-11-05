@@ -89,8 +89,9 @@ jobs:
       pull-requests: write
 
     # Runs no upstream code: it copies the allowlisted bundle files and opens or
-    # updates one pull request, authored as the maintainer so the rebase merge
-    # keeps a person, not a bot, in the history.
+    # updates one pull request, authored as netspeedybot so the rebase merge
+    # records the automation account, not github-actions[bot] or a person who
+    # didn't write it.
     steps:
       - name: Checkout deployment repository
         uses: actions/checkout@v7
@@ -111,8 +112,8 @@ jobs:
         uses: peter-evans/create-pull-request@v8
         with:
           branch: ${{ env.SYNC_BRANCH }}
-          author: Simon Oakes <813389+soakes@users.noreply.github.com>
-          committer: Simon Oakes <813389+soakes@users.noreply.github.com>
+          author: netspeedybot <45371234+netspeedybot@users.noreply.github.com>
+          committer: netspeedybot <45371234+netspeedybot@users.noreply.github.com>
           commit-message: ${{ needs.sync.outputs.title }}
           title: ${{ needs.sync.outputs.title }}
           body-path: ${{ runner.temp }}/bundle/pull-request.md

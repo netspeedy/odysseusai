@@ -37,7 +37,7 @@ temporary build context.
   from upstream main in a job with no write credentials, validates it and
   smoke-tests SearXNG, then a second job applies only the allowlisted files and
   opens or updates one pull request on `automation/sync-deployment-bundle`,
-  authored as the maintainer. Keep that split: the job that can push must never
+  authored as `netspeedybot`. Keep that split: the job that can push must never
   run upstream code.
 - Build and Validate (`build-and-validate.yml`): pull requests, pushes to
   main and dispatch. Lints, unit tests, patches against upstream main and dev
@@ -47,7 +47,7 @@ temporary build context.
 - Automation Auto Merge (04:05 UTC, and after Build and Validate) merges
   Dependabot and bundle sync pull requests once Build and Validate has passed
   for the head revision, ahead of the image run. Sync pull requests are
-  rebase-merged so the maintainer stays the commit author; a squash would make
+  rebase-merged so netspeedybot stays the commit author; a squash would make
   `github-actions[bot]` the author. Dependabot pull requests are squashed.
 - Odysseus Container Pipeline (`build-image.yml`, 04:17 UTC and on pushes
   that touch the pipeline): per channel, a plan job reads GHCR anonymously,
@@ -78,8 +78,11 @@ temporary build context.
 
 ## Rules
 
-- Only people appear in this repository's history. Automated commits are
-  authored as the maintainer, never as `github-actions[bot]`.
+- Only people and `netspeedybot` appear in this repository's history.
+  Automated commits are authored as netspeedybot
+  (`45371234+netspeedybot@users.noreply.github.com`), never as
+  `github-actions[bot]` and never as a person who didn't write them. Nobody
+  commits as netspeedybot by hand.
 - A patch must be a compatibility fix that upstream doesn't have, with the
   reason in the patch's own comments and in the README's "What the packaging
   changes" section. Features belong upstream. When upstream fixes something,
