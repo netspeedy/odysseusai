@@ -338,9 +338,12 @@ jobs:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}@${IMAGE_DIGEST}"
 
+      # The channel's published tag from the plan (latest or dev), not the branch name.
       - name: Smoke test current Compose stack
         if: steps.plan.outputs.action == 'skip'
-        run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}:${{ matrix.channel.branch }}"
+        env:
+          CHANNEL_TAG: ${{ steps.plan.outputs.primary_tag }}
+        run: .github/scripts/smoke-test-compose.sh "${IMAGE_NAME}:${CHANNEL_TAG}"
 
       # The publish job promotes only when every platform has one of these. It
       # is empty when the channel was current and only the stack was booted.
