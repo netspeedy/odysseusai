@@ -120,7 +120,7 @@ services:
     # Pinned by tag and digest: odysseus waits on this healthcheck, so a broken
     # SearXNG release stops the whole app. Dependabot proposes new releases, and
     # the bundle checks boot the full stack for a real search before one merges.
-    image: docker.io/searxng/searxng:2026.11.6-ac11e14c5@sha256:c750ee1d859b26d3aeae51c07f6a48c3a0bfbaa9195d71a18b258862d88c4c3c
+    image: docker.io/searxng/searxng:2026.11.21-c6ee3e9fd@sha256:fc1d81d7e9d04d3c8b3e23c7162feddf5c3d6aecd32e67a56eaabcb8d8747f79
     entrypoint:
       - /bin/sh
       - -c
